@@ -2,5 +2,3 @@ requests
 playwright
 pywin32
 pycryptodomex
-selenium
-webdriver-manager

@@ -19,7 +19,8 @@ from tkinter import ttk, messagebox
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from kakao_sender import (send_message, do_login,
                           SESSION_FILE, _LEGACY_SESSION,
-                          SEARCH_URL, PROFILE_ID, _HEADERS)
+                          SEARCH_URL, PROFILE_ID, _HEADERS,
+                          _write_login_error)
 
 BG     = "#FAFAFA"
 WHITE  = "#FFFFFF"
@@ -885,16 +886,21 @@ class App(tk.Tk):
         threading.Thread(target=self._login_thread, daemon=True).start()
 
     def _login_thread(self):
-        ok = do_login()
+        try:
+            ok = do_login()
+        except Exception as e:
+            _write_login_error(e)
+            ok = False
+            err_msg = f"로그인 오류: {type(e).__name__}: {str(e)[:120]}"
+            self.after(0, lambda m=err_msg: self._hint.config(text=m, fg=RED))
+        self.after(0, lambda: self._login_btn.config(
+            text="카카오 로그인", state="normal", bg=YELLOW))
         if ok:
-            self.after(0, lambda: self._login_btn.config(
-                text="카카오 로그인", state="normal", bg=YELLOW))
             self.after(0, lambda: self._hint.config(text="로그인 완료 — 세션 확인 중...", fg=GRAY))
             self.after(0, self._init_session)
         else:
-            self.after(0, lambda: self._login_btn.config(
-                text="카카오 로그인", state="normal", bg=YELLOW))
-            self.after(0, lambda: self._hint.config(text="로그인 실패 — 다시 시도해주세요", fg=RED))
+            self.after(0, lambda: self._hint.config(
+                text="로그인 실패 — 다시 시도해주세요", fg=RED))
 
     # ── 창 중앙 배치 ──────────────────────────────────────────────
     def _refit(self):

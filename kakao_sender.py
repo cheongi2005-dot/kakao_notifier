@@ -1,8 +1,8 @@
 """카카오 비즈니스 채팅 자동화.
 
-로그인 방식 (student_manager 동일):
+로그인 방식:
   Stage 1. Chrome 쿠키 DB 직접 읽기 (Chrome 실행 중이어도 동작)
-  Stage 2. Playwright 브라우저로 직접 로그인
+  Stage 2. Playwright Chromium headed 로그인 (Chrome 설치 불필요)
 메시지 전송: Playwright headless → textarea.tf_g → btn_submit → 상담완료
 """
 import base64
@@ -143,148 +143,99 @@ def _try_chrome_direct() -> dict | None:
     return None
 
 
-# ── Stage 2: Selenium 브라우저 로그인 (student_manager 동일 로직) ─────────────
+# ── Stage 2: Playwright Chromium headed 로그인 ───────────────────────────────
 
-SELENIUM_PROFILE = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "kakao_selenium_profile"
+_PW_PROFILE = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "kakao_notifier_browser"
 
 
-def _try_selenium() -> dict | None:
-    """student_manager와 동일한 Selenium 로그인.
-    전용 Chrome 프로필 사용 → 로그인 유지, 완료 후 자동 종료.
+def _try_playwright_login() -> dict | None:
+    """이미 설치된 Playwright Chromium으로 headed 로그인.
+    Chrome 설치 불필요 — persistent context로 프로필 유지.
     """
+    _PW_PROFILE.mkdir(parents=True, exist_ok=True)
     try:
-        from selenium import webdriver
-        from selenium.webdriver.chrome.options import Options
-        from selenium.webdriver.chrome.service import Service
-        from webdriver_manager.chrome import ChromeDriverManager
-    except ImportError as e:
-        print(f"  selenium 패키지 없음: {e}")
-        return None
+        with sync_playwright() as p:
+            ctx = p.chromium.launch_persistent_context(
+                str(_PW_PROFILE),
+                headless=False,
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-popup-blocking",
+                    "--window-size=1280,800",
+                ],
+                ignore_default_args=["--enable-automation"],
+            )
+            page = ctx.pages[0] if ctx.pages else ctx.new_page()
+            try:
+                page.goto(
+                    f"https://business.kakao.com/{PROFILE_ID}/chats",
+                    wait_until="domcontentloaded", timeout=30_000,
+                )
+            except Exception:
+                pass
 
-    SELENIUM_PROFILE.mkdir(parents=True, exist_ok=True)
-
-    opts = Options()
-    for arg in [
-        "--disable-blink-features=AutomationControlled",
-        "--disable-popup-blocking",
-        "--window-size=1280,800",
-        f"--user-data-dir={SELENIUM_PROFILE}",
-    ]:
-        opts.add_argument(arg)
-    opts.add_experimental_option("excludeSwitches", ["enable-automation"])
-    opts.add_experimental_option("useAutomationExtension", False)
-    opts.set_capability("goog:loggingPrefs", {"performance": "ALL"})
-
-    service = Service(ChromeDriverManager().install())
-    if sys.platform == "win32":
-        import subprocess
-        service.creation_flags = subprocess.CREATE_NO_WINDOW
-
-    driver = webdriver.Chrome(
-        service=service, options=opts
-    )
-    driver.execute_script(
-        "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-    )
-    driver.set_page_load_timeout(60)
-    driver.set_script_timeout(30)
-    driver.get(f"https://business.kakao.com/{PROFILE_ID}/chats")
-
-    def _drain_perf_logs() -> str:
-        tok = ""
-        try:
-            for entry in driver.get_log("performance"):
-                msg = json.loads(entry.get("message", "{}")).get("message", {})
-                if msg.get("method") != "Network.requestWillBeSent":
-                    continue
-                req = msg.get("params", {}).get("request", {})
-                if "crux-bizgateway.kakao.com" not in req.get("url", ""):
-                    continue
-                auth = req.get("headers", {}).get("Authorization", "")
-                if auth.startswith("Bearer "):
-                    t = auth.removeprefix("Bearer ").strip()
-                    if t:
-                        tok = t
-        except Exception:
-            pass
-        return tok
-
-    token  = ""
-    stable = 0
-    for waited in range(0, 300, 2):  # 최대 5분
-        cur = driver.current_url
-        is_chat = (
-            "business.kakao.com" in cur
-            and "login" not in cur
-            and "accounts.kakao.com" not in cur
-            and "biz-auth.kakao.com" not in cur
-        )
-        t = _drain_perf_logs()
-        if t:
-            token = t
-
-        if is_chat:
-            stable += 1
-            if stable >= 5:  # 10초 안정 확인
-                break
-        else:
-            if stable > 0:
-                print("  2FA 진행 중 — 대기...")
             stable = 0
-
-        time.sleep(2)
-    else:
-        driver.quit()
-        return None
-
-    # ── 관리자 추가인증 자동 처리 ──────────────────────────────────────
-    # 채팅 목록에 '관리자 추가인증' 버튼이 있으면 자동 클릭 후 사용자 완료 대기
-    try:
-        from selenium.webdriver.common.by import By
-        auth_btns = driver.find_elements(
-            By.XPATH, "//button[contains(text(),'관리자 추가인증')]"
-        )
-        if auth_btns:
-            print("  관리자 추가인증 버튼 감지 — 자동 클릭, 인증을 완료해 주세요")
-            auth_btns[0].click()
-            # 사용자가 인증을 완료해 채팅 목록으로 돌아올 때까지 최대 5분 대기
-            for _ in range(0, 300, 2):
-                time.sleep(2)
-                cur2 = driver.current_url
-                # 추가인증 완료 → 채팅 목록 또는 채팅 페이지로 복귀
-                if (f"/{PROFILE_ID}/chats" in cur2
-                        and "additional-auth" not in cur2
-                        and "extra-auth" not in cur2):
-                    print("  추가인증 완료 감지")
+            for _ in range(150):  # 최대 5분
+                try:
+                    cur = page.url
+                except Exception:
                     break
-    except Exception:
-        pass
+                is_chat = (
+                    "business.kakao.com" in cur
+                    and "login" not in cur.lower()
+                    and "accounts.kakao.com" not in cur
+                    and "biz-auth.kakao.com" not in cur
+                )
+                if is_chat:
+                    stable += 1
+                    if stable >= 5:
+                        break
+                else:
+                    stable = 0
+                time.sleep(2)
+            else:
+                ctx.close()
+                return None
 
-    cookies = {
-        c["name"]: c["value"]
-        for c in driver.get_cookies()
-        if "kakao.com" in c.get("domain", "")
-    }
+            # 관리자 추가인증 버튼 처리
+            try:
+                btn = page.locator("button:has-text('관리자 추가인증')").first
+                if btn.is_visible(timeout=2_000):
+                    btn.click()
+                    for _ in range(150):
+                        time.sleep(2)
+                        cur2 = page.url
+                        if (f"/{PROFILE_ID}/chats" in cur2
+                                and "additional-auth" not in cur2
+                                and "extra-auth" not in cur2):
+                            break
+            except Exception:
+                pass
 
-    # localStorage도 함께 캡처 (추가인증 등 쿠키 외 인증 상태 보존)
-    local_storage: dict = {}
-    try:
-        ls_json = driver.execute_script(
-            "return JSON.stringify(Object.fromEntries("
-            "Object.entries(localStorage).filter(([k]) => "
-            "k.includes('auth') || k.includes('kakao') || k.includes('biz'))))"
-        )
-        if ls_json:
-            local_storage = json.loads(ls_json)
-    except Exception:
-        pass
+            cookies = {
+                c["name"]: c["value"]
+                for c in ctx.cookies()
+                if "kakao.com" in c.get("domain", "")
+            }
+            local_storage: dict = {}
+            try:
+                ls_json = page.evaluate(
+                    "() => JSON.stringify(Object.fromEntries("
+                    "Object.entries(localStorage).filter(([k]) => "
+                    "k.includes('auth') || k.includes('kakao') || k.includes('biz'))))"
+                )
+                if ls_json:
+                    local_storage = json.loads(ls_json)
+            except Exception:
+                pass
 
-    driver.quit()  # 로그인 완료 후 자동 종료
-
-    if not cookies:
+            ctx.close()
+            if not cookies:
+                return None
+            return {"token": "", "cookies": cookies, "local_storage": local_storage}
+    except Exception as e:
+        print(f"  Playwright 로그인 실패: {e}")
         return None
-
-    return {"token": token, "cookies": cookies, "local_storage": local_storage}
 
 
 # ── 공통 ──────────────────────────────────────────────────────────────────────
@@ -322,26 +273,21 @@ def _validate_session(session: dict) -> bool:
 
 
 def do_login() -> bool:
-    """Stage 1(Chrome 쿠키 직접 읽기) → Stage 2(Selenium 브라우저 로그인) 순서로 시도."""
-    # Stage 1: Chrome 쿠키 직접 읽기 (API 검증 포함)
+    """Stage 1(Chrome 쿠키 직접 읽기) → Stage 2(Playwright 브라우저 로그인) 순서로 시도."""
     session = _try_chrome_direct()
     if session:
         _save_session(session)
         return True
 
-    # Stage 2: Selenium 로그인
-    session = _try_selenium()
+    session = _try_playwright_login()
     if session:
         cookies = session.get("cookies", {})
-        # _kaslt 있으면 로그인 성공으로 간주 — API 검증 없이 저장
         if "_kaslt" in cookies:
             _save_session(session)
             return True
-        # _kaslt 없으면 API 검증 후 저장
         if cookies and _validate_session(session):
             _save_session(session)
             return True
-        # 신규 세션 실패 → 레거시 시도
         if _LEGACY_SESSION.exists():
             try:
                 legacy = json.loads(_LEGACY_SESSION.read_text(encoding="utf-8"))
@@ -397,6 +343,17 @@ def _find_chat_id(name: str, session: dict) -> str | None:
     found_name = first.get("name", "")
     print(f"  [참고] '{name}' 정확 일치 없음 → '{found_name}' 사용")
     return str(first.get("id") or first.get("chatId") or first.get("chat_id") or "")
+
+
+def _write_login_error(exc: Exception) -> None:
+    try:
+        import traceback as _tb
+        log_path = SESSION_FILE.parent / "login_error.log"
+        entry = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {type(exc).__name__}: {exc}\n{_tb.format_exc()}\n---\n"
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(entry)
+    except Exception:
+        pass
 
 
 def _write_log(msg: str) -> None:
