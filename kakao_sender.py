@@ -156,6 +156,19 @@ def _try_playwright_login() -> dict | None:
     Chrome 설치 불필요 — persistent context로 프로필 유지.
     """
     _PW_PROFILE.mkdir(parents=True, exist_ok=True)
+
+    # Playwright의 Node.js 드라이버가 CREATE_NO_WINDOW(0x08000000)로 spawn되면
+    # libuv가 GetConsoleTitle()=0을 받아 process_title NULL assert로 crash함.
+    # subprocess.Popen을 임시 패치해 해당 플래그를 제거.
+    import subprocess as _sp
+    _orig_Popen = _sp.Popen
+    class _PatchedPopen(_orig_Popen):
+        def __init__(self, *a, **kw):
+            if sys.platform == "win32":
+                kw["creationflags"] = kw.get("creationflags", 0) & ~0x08000000
+            super().__init__(*a, **kw)
+
+    _sp.Popen = _PatchedPopen
     try:
         with sync_playwright() as p:
             ctx = p.chromium.launch_persistent_context(
@@ -237,8 +250,10 @@ def _try_playwright_login() -> dict | None:
                 return None
             return {"token": "", "cookies": cookies, "local_storage": local_storage}
     except Exception as e:
-        print(f"  Playwright 로그인 실패: {e}")
+        _write_login_error(e)
         return None
+    finally:
+        _sp.Popen = _orig_Popen
 
 
 # ── 공통 ──────────────────────────────────────────────────────────────────────
@@ -275,12 +290,15 @@ def _validate_session(session: dict) -> bool:
         return False
 
 
-def do_login() -> bool:
-    """Stage 1(Chrome 쿠키 직접 읽기) → Stage 2(Playwright 브라우저 로그인) 순서로 시도."""
-    session = _try_chrome_direct()
-    if session:
-        _save_session(session)
-        return True
+def do_login(force_browser: bool = False) -> bool:
+    """Stage 1(Chrome 쿠키 직접 읽기) → Stage 2(Playwright 브라우저 로그인) 순서로 시도.
+    force_browser=True이면 Stage 1을 건너뛰고 바로 브라우저를 연다.
+    """
+    if not force_browser:
+        session = _try_chrome_direct()
+        if session:
+            _save_session(session)
+            return True
 
     session = _try_playwright_login()
     if session:

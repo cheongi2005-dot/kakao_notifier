@@ -856,7 +856,7 @@ class App(tk.Tk):
 
     def _login_thread(self):
         try:
-            ok = do_login()
+            ok = do_login(force_browser=True)
         except Exception as e:
             _write_login_error(e)
             ok = False
