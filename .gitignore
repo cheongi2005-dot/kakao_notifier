@@ -1,6 +1,7 @@
 # 가상환경 / 자동 설치 Python
 .venv/
 python-embed/
+python-local/
 
 # 빌드 결과물
 build/
