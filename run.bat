@@ -17,13 +17,13 @@ if not errorlevel 1 (
 if not defined PYEXE if exist "%LOCALAPPDATA%\Programs\Python\Python313\python.exe" set PYEXE=%LOCALAPPDATA%\Programs\Python\Python313\python.exe
 if not defined PYEXE if exist "%LOCALAPPDATA%\Programs\Python\Python312\python.exe" set PYEXE=%LOCALAPPDATA%\Programs\Python\Python312\python.exe
 if not defined PYEXE if exist "%LOCALAPPDATA%\Programs\Python\Python311\python.exe" set PYEXE=%LOCALAPPDATA%\Programs\Python\Python311\python.exe
-if not defined PYEXE if exist "%LOCALAPPDATA%\KakaoNotifierPython\python.exe"       set PYEXE=%LOCALAPPDATA%\KakaoNotifierPython\python.exe
 
 if defined PYEXE goto :use_python
 
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0setup_python.ps1"
 if errorlevel 1 ( pause & exit /b 1 )
-set PYEXE=%LOCALAPPDATA%\KakaoNotifierPython\python.exe
+set /p PYEXE=<"%TEMP%\kakao_pyexe.txt"
+if not defined PYEXE ( echo ERROR: could not read python path & pause & exit /b 1 )
 
 :use_python
 if not exist ".venv" (
