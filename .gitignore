@@ -1,0 +1,31 @@
+# 가상환경
+.venv/
+
+# 빌드 결과물
+build/
+dist/
+*.spec
+
+# 세션 / 사용자 데이터
+.kakao_session.json
+kakao_groups.json
+.browser_session/
+kakao_selenium_profile/
+
+# 자격증명 / 사용자 데이터 JSON
+firebase-key.json
+kakao_groups.json
+.kakao_session.json
+
+# Python 캐시
+__pycache__/
+*.pyc
+*.pyo
+
+# 빌드 스크립트
+빌드.bat
+
+# 로그 / 디버그
+*.log
+*.png
+build_log.txt
