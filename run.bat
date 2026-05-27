@@ -23,8 +23,10 @@ goto :use_embed
 :: ══════════════════════════════════════════════════
 :use_uv
 if not exist ".venv" (
-    uv venv || ( pause & exit /b 1 )
-    .venv\Scripts\python.exe -m pip install -r requirements.txt || ( pause & exit /b 1 )
+    uv venv --seed
+    if errorlevel 1 ( pause & exit /b 1 )
+    .venv\Scripts\python.exe -m pip install -r requirements.txt
+    if errorlevel 1 ( pause & exit /b 1 )
     .venv\Scripts\python.exe -m playwright install chromium
 )
 start "" .venv\Scripts\pythonw.exe ui.py
@@ -32,8 +34,10 @@ exit /b 0
 
 :use_python
 if not exist ".venv" (
-    python -m venv .venv || ( pause & exit /b 1 )
-    .venv\Scripts\pip install -r requirements.txt || ( pause & exit /b 1 )
+    python -m venv .venv
+    if errorlevel 1 ( pause & exit /b 1 )
+    .venv\Scripts\pip install -r requirements.txt
+    if errorlevel 1 ( pause & exit /b 1 )
     .venv\Scripts\python.exe -m playwright install chromium
 )
 start "" .venv\Scripts\pythonw.exe ui.py
