@@ -14,8 +14,8 @@ Remove-Item "$tmp\py-embed.zip" -Force
 
 Write-Host "[3/4] Enabling pip..."
 $pth = Get-ChildItem "$dest\python3*._pth" | Select-Object -First 1
-(Get-Content $pth.FullName -Raw) -replace '#import site','import site' |
-    Set-Content $pth.FullName -Encoding UTF8
+$pthContent = (Get-Content $pth.FullName -Raw) -replace '#import site','import site'
+[System.IO.File]::WriteAllText($pth.FullName, $pthContent, (New-Object System.Text.UTF8Encoding $false))
 
 Write-Host "[4/4] Installing pip..."
 Invoke-WebRequest "https://bootstrap.pypa.io/get-pip.py" `
