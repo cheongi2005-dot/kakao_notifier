@@ -6,6 +6,7 @@ set PYTHONPATH=
 where uv >nul 2>&1
 if not errorlevel 1 goto :use_uv
 
+:find_python
 set PYEXE=
 
 where python >nul 2>&1
@@ -22,10 +23,10 @@ if defined PYEXE goto :use_python
 
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0setup_python.ps1"
 if errorlevel 1 ( pause & exit /b 1 )
-set /p PYEXE=<"%TEMP%\kakao_pyexe.txt"
-if not defined PYEXE ( echo ERROR: could not read python path & pause & exit /b 1 )
+goto :find_python
 
 :use_python
+if not defined PYEXE ( echo ERROR: Python not found & pause & exit /b 1 )
 if not exist ".venv" (
     "%PYEXE%" -m venv .venv
     if errorlevel 1 ( pause & exit /b 1 )

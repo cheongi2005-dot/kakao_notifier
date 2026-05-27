@@ -17,36 +17,4 @@ if ($p.ExitCode -ne 0) {
     exit 1
 }
 
-# Find where Python actually installed
-$pyExe = $null
-$candidates = @(
-    "$env:LOCALAPPDATA\Programs\Python\Python313\python.exe",
-    "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe",
-    "$env:LOCALAPPDATA\Programs\Python\Python311\python.exe",
-    "C:\Python313\python.exe"
-)
-foreach ($c in $candidates) {
-    if (Test-Path $c) { $pyExe = $c; break }
-}
-
-if (-not $pyExe) {
-    foreach ($ver in @("3.13","3.12","3.11")) {
-        $reg = Get-ItemProperty "HKCU:\Software\Python\PythonCore\$ver\InstallPath" -ErrorAction SilentlyContinue
-        if ($reg) {
-            $base = $reg."(default)"
-            if (-not $base) { $base = $reg.InstallPath }
-            if ($base -and (Test-Path "$base\python.exe")) {
-                $pyExe = "$base\python.exe"; break
-            }
-        }
-    }
-}
-
-if (-not $pyExe) {
-    Write-Host "ERROR: python.exe not found after install"
-    exit 1
-}
-
-Write-Host "Python found: $pyExe"
-[System.IO.File]::WriteAllText("$tmp\kakao_pyexe.txt", $pyExe, (New-Object System.Text.UTF8Encoding $false))
 Write-Host "Python setup complete."
