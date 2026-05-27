@@ -2,6 +2,7 @@
 cd /d "%~dp0"
 set PYTHONHOME=
 set PYTHONPATH=
+set VENV=%LOCALAPPDATA%\kakao_notifier_venv
 
 where uv >nul 2>&1
 if not errorlevel 1 goto :use_uv
@@ -34,25 +35,25 @@ if not defined PYEXE (
 if not defined PYEXE ( echo ERROR: Python not found. Please install Python 3.11+ from python.org & pause & exit /b 1 )
 
 :use_python
-if not exist ".venv" (
-    "%PYEXE%" -m venv .venv
+if not exist "%VENV%\Scripts\python.exe" (
+    "%PYEXE%" -m venv "%VENV%"
     if errorlevel 1 ( pause & exit /b 1 )
-    .venv\Scripts\pip install -r requirements.txt
+    "%VENV%\Scripts\pip" install -r "%~dp0requirements.txt"
     if errorlevel 1 ( pause & exit /b 1 )
-    .venv\Scripts\python.exe -m playwright install chromium
+    "%VENV%\Scripts\python.exe" -m playwright install chromium
     if errorlevel 1 ( pause & exit /b 1 )
 )
-start "" .venv\Scripts\python.exe ui.py
+start "" "%VENV%\Scripts\python.exe" "%~dp0ui.py"
 exit /b 0
 
 :use_uv
-if not exist ".venv" (
-    uv venv --seed
+if not exist "%VENV%\Scripts\python.exe" (
+    uv venv --seed "%VENV%"
     if errorlevel 1 ( pause & exit /b 1 )
-    .venv\Scripts\python.exe -m pip install -r requirements.txt
+    "%VENV%\Scripts\python.exe" -m pip install -r "%~dp0requirements.txt"
     if errorlevel 1 ( pause & exit /b 1 )
-    .venv\Scripts\python.exe -m playwright install chromium
+    "%VENV%\Scripts\python.exe" -m playwright install chromium
     if errorlevel 1 ( pause & exit /b 1 )
 )
-start "" .venv\Scripts\python.exe ui.py
+start "" "%VENV%\Scripts\python.exe" "%~dp0ui.py"
 exit /b 0
