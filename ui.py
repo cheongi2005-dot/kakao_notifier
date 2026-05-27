@@ -137,32 +137,6 @@ def _kakao_search(keyword: str, session: dict, my_id) -> list[dict]:
         return []
 
 
-def _ensure_playwright_browsers():
-    """Playwright Chromium이 없으면 자동 설치 (첫 실행 시 1회)."""
-    try:
-        from playwright.sync_api import sync_playwright
-        with sync_playwright() as p:
-            p.chromium.launch(headless=True).close()
-    except Exception:
-        # frozen exe에서는 sys.executable이 Python 인터프리터가 아니므로
-        # playwright 패키지의 node.exe + cli.js 를 직접 사용해 설치
-        try:
-            import inspect, subprocess
-            import playwright as _pw
-            driver_dir = os.path.join(os.path.dirname(inspect.getfile(_pw)), "driver")
-            node_exe   = os.path.join(driver_dir, "node.exe")
-            cli_js     = os.path.join(driver_dir, "package", "cli.js")
-            if os.path.exists(node_exe) and os.path.exists(cli_js):
-                subprocess.run([node_exe, cli_js, "install", "chromium"], check=False)
-            elif not getattr(sys, "frozen", False):
-                subprocess.run(
-                    [sys.executable, "-m", "playwright", "install", "chromium"],
-                    check=False,
-                )
-        except Exception:
-            pass
-
-
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -187,9 +161,6 @@ class App(tk.Tk):
 
         # 전역 마우스휠 바인딩
         self.bind_all("<MouseWheel>", self._on_wheel)
-
-        # Playwright Chromium 없으면 백그라운드에서 자동 설치
-        threading.Thread(target=_ensure_playwright_browsers, daemon=True).start()
 
         self.after(100, self._init_session)
 
@@ -355,8 +326,6 @@ class App(tk.Tk):
                                   font=F, width=6, relief="flat", bd=0,
                                   bg=WHITE, fg=DARK,
                                   highlightthickness=1, highlightbackground=BORDER)
-        self._sched_frame = None
-
         # ══ [왼쪽] 전송 버튼 ══════════════════════════════════════
         self._send_btn = tk.Button(left, text="전송", font=FB,
                                    bg=YELLOW, fg=DARK, relief="flat", bd=0,
@@ -642,7 +611,7 @@ class App(tk.Tk):
         fail_map = {}   # name → reason
         total    = len(targets)
 
-        with ThreadPoolExecutor(max_workers=4) as pool:
+        with ThreadPoolExecutor(max_workers=2) as pool:
             futures = {pool.submit(send_message, t["name"], msg): t["name"]
                        for t in targets}
             for future in as_completed(futures):

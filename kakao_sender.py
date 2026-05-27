@@ -19,14 +19,17 @@ from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
 import config
 
+# Playwright 브라우저 경로: run.bat이 설정하지만 직접 실행 시에도 동작하도록 폴백 설정
+if not os.environ.get("PLAYWRIGHT_BROWSERS_PATH"):
+    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "C:/Users/Public/kakao_pw_browsers"
+
 PROFILE_ID      = "_ADPZb"
 CHAT_BASE       = f"https://business.kakao.com/{PROFILE_ID}/chats"
 SEARCH_URL      = f"https://business.kakao.com/api/profiles/{PROFILE_ID}/chats/search"
-SESSION_FILE    = (
-    Path(os.path.dirname(sys.executable))          # frozen exe 옆
-    if getattr(sys, 'frozen', False)
-    else Path(os.path.dirname(os.path.abspath(__file__)))
-) / ".kakao_session.json"
+
+# 데이터 파일 (세션, 그룹, 로그)은 OneDrive 밖의 고정 경로에 저장
+_DATA_DIR       = Path("C:/Users/Public/kakao_notifier_data")
+SESSION_FILE    = _DATA_DIR / ".kakao_session.json"
 _LEGACY_SESSION = Path(os.environ.get("APPDATA", "")) / "학생관리시스템" / ".kakao_session.json"
 
 _HEADERS = {
@@ -145,7 +148,7 @@ def _try_chrome_direct() -> dict | None:
 
 # ── Stage 2: Playwright Chromium headed 로그인 ───────────────────────────────
 
-_PW_PROFILE = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "kakao_notifier_browser"
+_PW_PROFILE = Path("C:/Users/Public/kakao_notifier_browser")
 
 
 def _try_playwright_login() -> dict | None:

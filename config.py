@@ -9,12 +9,7 @@ else:
     _APP_DIR    = Path(os.path.dirname(os.path.abspath(__file__)))
     _BUNDLE_DIR = _APP_DIR
 
-# firebase-key.json: 번들 내부 → 없으면 student_manager 폴더 시도
-_fb_candidates = [
-    _BUNDLE_DIR / "firebase-key.json",
-    Path(r"c:\Users\Cheon\OneDrive\바탕 화면\student_manager") / "firebase-key.json",
-]
-FIREBASE_KEY        = str(next((p for p in _fb_candidates if p.exists()), _fb_candidates[0]))
+FIREBASE_KEY        = str(_BUNDLE_DIR / "firebase-key.json")
 FIREBASE_PROJECT_ID = "student-manager-coaching"
 
 TEACHER = "이다성"
