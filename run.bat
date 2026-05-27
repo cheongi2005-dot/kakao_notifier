@@ -6,17 +6,36 @@ set PYTHONPATH=
 where uv >nul 2>&1
 if not errorlevel 1 goto :use_uv
 
+set PYEXE=
+
 where python >nul 2>&1
 if not errorlevel 1 (
-    python -c "import sys; exit(0 if sys.version_info>=(3,11) else 1)" >nul 2>&1
-    if not errorlevel 1 goto :use_python
+    python -c "import sys;exit(0 if sys.version_info>=(3,11) else 1)" >nul 2>&1
+    if not errorlevel 1 set PYEXE=python
 )
 
-if not exist "python-local\python.exe" (
-    powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0setup_python.ps1"
+if not defined PYEXE if exist "%LOCALAPPDATA%\Programs\Python\Python313\python.exe" set PYEXE=%LOCALAPPDATA%\Programs\Python\Python313\python.exe
+if not defined PYEXE if exist "%LOCALAPPDATA%\Programs\Python\Python312\python.exe" set PYEXE=%LOCALAPPDATA%\Programs\Python\Python312\python.exe
+if not defined PYEXE if exist "%LOCALAPPDATA%\Programs\Python\Python311\python.exe" set PYEXE=%LOCALAPPDATA%\Programs\Python\Python311\python.exe
+if not defined PYEXE if exist "%LOCALAPPDATA%\KakaoNotifierPython\python.exe"       set PYEXE=%LOCALAPPDATA%\KakaoNotifierPython\python.exe
+
+if defined PYEXE goto :use_python
+
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0setup_python.ps1"
+if errorlevel 1 ( pause & exit /b 1 )
+set PYEXE=%LOCALAPPDATA%\KakaoNotifierPython\python.exe
+
+:use_python
+if not exist ".venv" (
+    "%PYEXE%" -m venv .venv
+    if errorlevel 1 ( pause & exit /b 1 )
+    .venv\Scripts\pip install -r requirements.txt
+    if errorlevel 1 ( pause & exit /b 1 )
+    .venv\Scripts\python.exe -m playwright install chromium
     if errorlevel 1 ( pause & exit /b 1 )
 )
-goto :use_local
+start "" .venv\Scripts\python.exe ui.py
+exit /b 0
 
 :use_uv
 if not exist ".venv" (
@@ -25,27 +44,7 @@ if not exist ".venv" (
     .venv\Scripts\python.exe -m pip install -r requirements.txt
     if errorlevel 1 ( pause & exit /b 1 )
     .venv\Scripts\python.exe -m playwright install chromium
-)
-start "" .venv\Scripts\pythonw.exe ui.py
-exit /b 0
-
-:use_python
-if not exist ".venv" (
-    python -m venv .venv
-    if errorlevel 1 ( pause & exit /b 1 )
-    .venv\Scripts\pip install -r requirements.txt
-    if errorlevel 1 ( pause & exit /b 1 )
-    .venv\Scripts\python.exe -m playwright install chromium
-)
-start "" .venv\Scripts\pythonw.exe ui.py
-exit /b 0
-
-:use_local
-if not exist "python-local\Lib\site-packages\playwright" (
-    python-local\python.exe -m pip install -r requirements.txt
-    if errorlevel 1 ( pause & exit /b 1 )
-    python-local\python.exe -m playwright install chromium
     if errorlevel 1 ( pause & exit /b 1 )
 )
-start "" python-local\pythonw.exe ui.py
+start "" .venv\Scripts\python.exe ui.py
 exit /b 0
