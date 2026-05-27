@@ -6,7 +6,6 @@ set PYTHONPATH=
 where uv >nul 2>&1
 if not errorlevel 1 goto :use_uv
 
-:find_python
 set PYEXE=
 
 where python >nul 2>&1
@@ -23,10 +22,18 @@ if defined PYEXE goto :use_python
 
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0setup_python.ps1"
 if errorlevel 1 ( pause & exit /b 1 )
-goto :find_python
+
+if not defined PYEXE if exist "%LOCALAPPDATA%\Programs\Python\Python313\python.exe" set PYEXE=%LOCALAPPDATA%\Programs\Python\Python313\python.exe
+if not defined PYEXE if exist "%LOCALAPPDATA%\Programs\Python\Python312\python.exe" set PYEXE=%LOCALAPPDATA%\Programs\Python\Python312\python.exe
+if not defined PYEXE if exist "%LOCALAPPDATA%\Programs\Python\Python311\python.exe" set PYEXE=%LOCALAPPDATA%\Programs\Python\Python311\python.exe
+
+if not defined PYEXE (
+    for /f "usebackq delims=" %%P in (`powershell -NoProfile -Command "foreach ($v in '3.13','3.12','3.11') { $r = Get-ItemProperty \"HKCU:\Software\Python\PythonCore\$v\InstallPath\" -EA SilentlyContinue; if ($r) { $b = $r.'(default)'; if (-not $b) { $b = $r.InstallPath }; if ($b -and (Test-Path \"${b}python.exe\")) { Write-Output \"${b}python.exe\"; break } } }"`) do set PYEXE=%%P
+)
+
+if not defined PYEXE ( echo ERROR: Python not found. Please install Python 3.11+ from python.org & pause & exit /b 1 )
 
 :use_python
-if not defined PYEXE ( echo ERROR: Python not found & pause & exit /b 1 )
 if not exist ".venv" (
     "%PYEXE%" -m venv .venv
     if errorlevel 1 ( pause & exit /b 1 )
