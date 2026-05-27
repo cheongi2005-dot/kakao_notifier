@@ -2,7 +2,8 @@
 cd /d "%~dp0"
 set PYTHONHOME=
 set PYTHONPATH=
-set VENV=%LOCALAPPDATA%\kakao_notifier_venv
+set VENV=C:\Users\Public\kakao_notifier_venv
+set PLAYWRIGHT_BROWSERS_PATH=C:\Users\Public\kakao_pw_browsers
 
 where uv >nul 2>&1
 if not errorlevel 1 goto :use_uv
