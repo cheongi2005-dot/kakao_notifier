@@ -85,7 +85,9 @@ def _read_chrome_cookies() -> dict | None:
         ).fetchall()
         con.close()
     except Exception:
-        tmp = Path(tempfile.mktemp(suffix=".db"))
+        fd, tmp_str = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        tmp = Path(tmp_str)
         try:
             shutil.copy2(cookie_path, tmp)
             con  = sqlite3.connect(str(tmp))
@@ -94,8 +96,7 @@ def _read_chrome_cookies() -> dict | None:
             ).fetchall()
             con.close()
         except Exception:
-            if tmp:
-                tmp.unlink(missing_ok=True)
+            tmp.unlink(missing_ok=True)
             return None
 
     cookies = {}
@@ -191,11 +192,28 @@ def _try_playwright_login() -> dict | None:
                 pass
 
             stable = 0
-            for _ in range(150):  # 최대 5분
+            login_ok = False
+            for _ in range(300):  # 최대 10분
                 try:
+                    if ctx.pages:
+                        page = ctx.pages[-1]
+
+                    # 1순위: _kaslt 쿠키 등장 = 2FA 포함 로그인 완전 완료
+                    kakao_ck = {
+                        c["name"]: c["value"]
+                        for c in ctx.cookies()
+                        if "kakao.com" in c.get("domain", "")
+                    }
+                    if "_kaslt" in kakao_ck:
+                        login_ok = True
+                        break
+
+                    # 2순위(폴백): 채팅 URL 안정 감지
                     cur = page.url
-                except Exception:
+                except Exception as e:
+                    _write_login_error(e)
                     break
+
                 is_chat = (
                     "business.kakao.com" in cur
                     and "login" not in cur.lower()
@@ -204,7 +222,8 @@ def _try_playwright_login() -> dict | None:
                 )
                 if is_chat:
                     stable += 1
-                    if stable >= 5:
+                    if stable >= 3:
+                        login_ok = True
                         break
                 else:
                     stable = 0
@@ -213,13 +232,19 @@ def _try_playwright_login() -> dict | None:
                 ctx.close()
                 return None
 
+            if not login_ok:
+                ctx.close()
+                return None
+
             # 관리자 추가인증 버튼 처리
             try:
                 btn = page.locator("button:has-text('관리자 추가인증')").first
                 if btn.is_visible(timeout=2_000):
                     btn.click()
-                    for _ in range(150):
+                    for _ in range(300):  # 최대 10분
                         time.sleep(2)
+                        if ctx.pages:
+                            page = ctx.pages[-1]
                         cur2 = page.url
                         if (f"/{PROFILE_ID}/chats" in cur2
                                 and "additional-auth" not in cur2
@@ -309,14 +334,18 @@ def do_login(force_browser: bool = False) -> bool:
         if cookies and _validate_session(session):
             _save_session(session)
             return True
-        if _LEGACY_SESSION.exists():
-            try:
-                legacy = json.loads(_LEGACY_SESSION.read_text(encoding="utf-8"))
-                if _validate_session(legacy):
-                    _save_session(legacy)
-                    return True
-            except Exception:
-                pass
+        # 새 세션이 있지만 검증 실패 — 레거시 폴백하지 않음
+        return False
+
+    # Playwright도 실패한 경우에만 레거시 세션 시도
+    if _LEGACY_SESSION.exists():
+        try:
+            legacy = json.loads(_LEGACY_SESSION.read_text(encoding="utf-8"))
+            if _validate_session(legacy):
+                _save_session(legacy)
+                return True
+        except Exception:
+            pass
 
     return False
 
@@ -358,12 +387,14 @@ def _find_chat_id(name: str, session: dict) -> str | None:
 
     for item in items:
         if item.get("name", "").strip() == name:
-            return str(item.get("id") or item.get("chatId") or item.get("chat_id") or "")
+            cid = next((item[k] for k in ("id", "chatId", "chat_id") if item.get(k) is not None), "")
+            return str(cid)
 
     first      = items[0]
     found_name = first.get("name", "")
     print(f"  [참고] '{name}' 정확 일치 없음 → '{found_name}' 사용")
-    return str(first.get("id") or first.get("chatId") or first.get("chat_id") or "")
+    cid = next((first[k] for k in ("id", "chatId", "chat_id") if first.get(k) is not None), "")
+    return str(cid)
 
 
 def _write_login_error(exc: Exception) -> None:

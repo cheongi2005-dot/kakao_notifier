@@ -152,6 +152,7 @@ class App(tk.Tk):
         self._result_vars: list[tk.BooleanVar] = []
         self._selected: list[dict] = []   # 전송 대상
         self._sched_jobs: dict = {}       # job_id → {label, cancelled}
+        self._sched_counter = 0           # 예약 ID 생성용 단조증가 카운터
         self._search_after = None
 
         self._build()
@@ -352,13 +353,16 @@ class App(tk.Tk):
 
     # ── 마우스휠 ─────────────────────────────────────────────────
     def _on_wheel(self, event):
-        w = event.widget
-        while w is not None:
-            if w is self._chip_canvas or w is self._chip_inner:
-                self._chip_canvas.yview_scroll(-1 * (event.delta // 120), "units")
-                return
-            w = getattr(w, "master", None)
-        self._canvas.yview_scroll(-1 * (event.delta // 120), "units")
+        try:
+            w = event.widget
+            while w is not None:
+                if w is self._chip_canvas or w is self._chip_inner:
+                    self._chip_canvas.yview_scroll(-1 * (event.delta // 120), "units")
+                    return
+                w = getattr(w, "master", None)
+            self._canvas.yview_scroll(-1 * (event.delta // 120), "units")
+        except Exception:
+            pass
 
     def _on_list_cfg(self, _=None):
         self._canvas.configure(scrollregion=self._canvas.bbox("all"))
@@ -547,7 +551,8 @@ class App(tk.Tk):
         label = f"⏰ {dt.strftime('%m/%d %H:%M')} — {names}"
 
         # 예약 큐에 추가 (버튼은 계속 활성)
-        job_id = id(targets)
+        self._sched_counter += 1
+        job_id = self._sched_counter
         self._sched_jobs[job_id] = {"label": label, "msg": msg, "cancelled": False}
         self._refresh_sched_list()
 
