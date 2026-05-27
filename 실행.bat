@@ -24,7 +24,7 @@ goto :use_embed
 :use_uv
 if not exist ".venv" (
     uv venv || ( pause & exit /b 1 )
-    uv pip install -r requirements.txt || ( pause & exit /b 1 )
+    .venv\Scripts\python.exe -m pip install -r requirements.txt || ( pause & exit /b 1 )
     .venv\Scripts\python.exe -m playwright install chromium
 )
 start "" .venv\Scripts\pythonw.exe ui.py
