@@ -1,5 +1,7 @@
 @echo off
 cd /d "%~dp0"
+set PYTHONHOME=
+set PYTHONPATH=
 
 where uv >nul 2>&1
 if not errorlevel 1 goto :use_uv
@@ -39,8 +41,6 @@ start "" .venv\Scripts\pythonw.exe ui.py
 exit /b 0
 
 :use_embed
-set PYTHONHOME=
-set PYTHONPATH=
 if not exist "python-embed\Lib\site-packages\playwright" (
     python-embed\python.exe -m pip install -r requirements.txt --no-warn-script-location
     if errorlevel 1 ( pause & exit /b 1 )
