@@ -490,7 +490,7 @@ def send_message(name: str, message: str) -> tuple[bool, str]:
                     page.locator("button.btn_g.btn_g2").click(timeout=5_000)
                     page.wait_for_timeout(400)
                 except PWTimeout:
-                    return False, "메시지 전송 성공, 상담완료 버튼 클릭 실패"
+                    pass  # 상담완료 버튼은 선택사항 — 전송 자체는 성공
 
                 return True, ""
 
