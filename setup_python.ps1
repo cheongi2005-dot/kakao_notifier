@@ -20,6 +20,8 @@ $pth = Get-ChildItem "$dest\python3*._pth" | Select-Object -First 1
 Write-Host "[4/4] Installing pip..."
 Invoke-WebRequest "https://bootstrap.pypa.io/get-pip.py" `
     -OutFile "$tmp\get-pip.py" -UseBasicParsing
+$env:PYTHONHOME = ""
+$env:PYTHONPATH = ""
 & "$dest\python.exe" "$tmp\get-pip.py" --no-warn-script-location
 Remove-Item "$tmp\get-pip.py" -Force
 
