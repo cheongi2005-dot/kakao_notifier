@@ -589,6 +589,52 @@ def _api_send_video(chat_url: str, web_url: str, file_path: str, session: dict) 
     r.raise_for_status()
 
 
+def _pw_complete(web_url: str, session: dict) -> None:
+    """headless 브라우저로 상담완료 버튼 클릭 (WebSocket 기반이라 API 불가)."""
+    cookie_list = [
+        {"name": k, "value": v, "domain": ".kakao.com", "path": "/"}
+        for k, v in session.get("cookies", {}).items()
+    ]
+    local_storage = session.get("local_storage", {})
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage"],
+            )
+            ctx  = browser.new_context()
+            ctx.add_cookies(cookie_list)
+            page = ctx.new_page()
+            if local_storage:
+                try:
+                    page.goto("https://business.kakao.com",
+                              wait_until="domcontentloaded", timeout=15_000)
+                    page.evaluate(
+                        "ls => { for (const [k,v] of Object.entries(ls)) "
+                        "localStorage.setItem(k, v); }",
+                        local_storage,
+                    )
+                except Exception:
+                    pass
+            try:
+                page.goto(web_url, wait_until="domcontentloaded", timeout=25_000)
+                page.wait_for_timeout(1500)
+                page.locator("button.btn_state").first.click(timeout=8_000)
+                page.wait_for_timeout(500)
+                for sel in ("button.btn_g_m", "button.btn_g.btn_g2"):
+                    try:
+                        page.locator(sel).first.click(timeout=4_000)
+                        page.wait_for_timeout(400)
+                    except PWTimeout:
+                        pass
+            except Exception:
+                pass
+            finally:
+                browser.close()
+    except Exception:
+        pass
+
+
 def send_message(name: str, message: str, file_paths: list[str] | None = None) -> tuple[bool, str]:
     """requests 직접 API로 메시지/파일 전송 (브라우저 불필요).
     반환값: (성공여부, 실패이유 또는 "")
@@ -622,6 +668,7 @@ def send_message(name: str, message: str, file_paths: list[str] | None = None) -
                     _api_send_document(chat_url, web_url, fp, session)
 
         _api_send_text(chat_url, web_url, message, session)
+        _pw_complete(web_url, session)
         return True, ""
 
     except requests.HTTPError as e:
