@@ -44,7 +44,7 @@ if not exist "%VENV%\Scripts\python.exe" (
     "%VENV%\Scripts\python.exe" -m playwright install chromium
     if errorlevel 1 ( pause & exit /b 1 )
 )
-start "kakao_notifier" "%VENV%\Scripts\python.exe" "%~dp0ui.py"
+start "kakao_notifier" "%VENV%\Scripts\pythonw.exe" "%~dp0ui.py"
 exit /b 0
 
 :use_uv
@@ -56,5 +56,5 @@ if not exist "%VENV%\Scripts\python.exe" (
     "%VENV%\Scripts\python.exe" -m playwright install chromium
     if errorlevel 1 ( pause & exit /b 1 )
 )
-start "kakao_notifier" "%VENV%\Scripts\python.exe" "%~dp0ui.py"
+start "kakao_notifier" "%VENV%\Scripts\pythonw.exe" "%~dp0ui.py"
 exit /b 0
