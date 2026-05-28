@@ -148,6 +148,8 @@ class App(tk.Tk):
         self._session: dict = {}
         self._my_id = None
         self._name_map: dict = {}
+        self._filter_id = None            # None = 전체, 숫자 = 특정 담당자
+        self._filter_name_to_id: dict = {}
         self._results: list[dict] = []
         self._result_vars: list[tk.BooleanVar] = []
         self._selected: list[dict] = []   # 전송 대상
@@ -183,9 +185,13 @@ class App(tk.Tk):
             return
         self._my_id = my_id
         self._name_map = name_map
-        my_name = name_map.get(my_id, "") if my_id else ""
-        msg = f"담당: {my_name}  |  이름 검색으로 내 학생 찾기"
-        self.after(0, lambda: self._hint.config(text=msg, fg=GRAY))
+        self._filter_id = my_id
+        name_to_id = {"전체": None}
+        for uid, uname in sorted(name_map.items(), key=lambda x: x[1]):
+            if uname:
+                name_to_id[uname] = uid
+        self._filter_name_to_id = name_to_id
+        self.after(0, lambda: self._setup_filter_combo(name_to_id, my_id))
         self.after(0, self._hide_login_btn)
 
     # ── UI 구성 ───────────────────────────────────────────────────
@@ -244,8 +250,18 @@ class App(tk.Tk):
         self._sel_count.pack(anchor="w", pady=(2, 12))
 
         # ══ [왼쪽] 검색 ═══════════════════════════════════════════
-        tk.Label(left, text="이름 검색  (내 담당 학생만 표시)", font=FB,
-                 bg=BG, fg=DARK).pack(anchor="w")
+        search_hdr = tk.Frame(left, bg=BG)
+        search_hdr.pack(fill="x")
+        tk.Label(search_hdr, text="이름 검색", font=FB,
+                 bg=BG, fg=DARK).pack(side="left")
+        tk.Label(search_hdr, text="담당:", font=FS,
+                 bg=BG, fg=GRAY).pack(side="left", padx=(12, 4))
+        self._filter_var = tk.StringVar(value="로딩 중...")
+        self._filter_combo = ttk.Combobox(
+            search_hdr, textvariable=self._filter_var,
+            font=FS, width=10, state="readonly")
+        self._filter_combo.pack(side="left")
+        self._filter_combo.bind("<<ComboboxSelected>>", self._on_filter_change)
 
         search_row = tk.Frame(left, bg=BG)
         search_row.pack(fill="x", pady=(4, 0))
@@ -368,6 +384,24 @@ class App(tk.Tk):
         self._canvas.configure(scrollregion=self._canvas.bbox("all"))
         self._canvas.itemconfig(self._cwin, width=self._canvas.winfo_width())
 
+    # ── 담당 필터 ─────────────────────────────────────────────────
+    def _setup_filter_combo(self, name_to_id: dict, my_id):
+        names = list(name_to_id.keys())
+        self._filter_combo["values"] = names
+        my_name = self._name_map.get(my_id, "")
+        default = my_name if my_name in name_to_id else (names[0] if names else "전체")
+        self._filter_var.set(default)
+        self._filter_id = name_to_id.get(default)
+        self._hint.config(text="이름 검색으로 학생 찾기", fg=GRAY)
+
+    def _on_filter_change(self, _=None):
+        selected = self._filter_var.get()
+        self._filter_id = self._filter_name_to_id.get(selected)
+        kw = self._kw_var.get().strip()
+        if kw:
+            self._hint.config(text="검색 중...", fg=GRAY)
+            threading.Thread(target=self._search_thread, args=(kw,), daemon=True).start()
+
     # ── 검색 ─────────────────────────────────────────────────────
     def _on_kw_change(self, *_):
         if self._search_after:
@@ -375,10 +409,7 @@ class App(tk.Tk):
         kw = self._kw_var.get().strip()
         if not kw:
             self._render_results([])
-            my_name = self._name_map.get(self._my_id, "")
-            self._hint.config(
-                text=f"담당: {my_name}  |  이름 검색으로 내 학생 찾기" if my_name else "",
-                fg=GRAY)
+            self._hint.config(text="이름 검색으로 학생 찾기", fg=GRAY)
             return
         self._hint.config(text="검색 중...", fg=GRAY)
         self._search_after = self.after(
@@ -386,12 +417,10 @@ class App(tk.Tk):
                 target=self._search_thread, args=(kw,), daemon=True).start())
 
     def _search_thread(self, kw):
-        results = _kakao_search(kw, self._session, self._my_id)
+        results = _kakao_search(kw, self._session, self._filter_id)
         self.after(0, lambda: self._render_results(results))
         n = len(results)
-        my_name = self._name_map.get(self._my_id, "")
-        suffix = f"  (담당: {my_name})" if my_name else ""
-        msg = f"{n}명{suffix}" if n else f"검색 결과 없음{suffix}"
+        msg = f"{n}명" if n else "검색 결과 없음"
         self.after(0, lambda: self._hint.config(text=msg, fg=GRAY))
 
     def _render_results(self, results):

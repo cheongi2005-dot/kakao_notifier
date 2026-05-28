@@ -493,13 +493,19 @@ def send_message(name: str, message: str) -> tuple[bool, str]:
 
                 try:
                     page.locator("button.btn_state").click(timeout=10_000)
-                    page.wait_for_timeout(600)
-                    page.locator("button.btn_g_m").first.click(timeout=5_000)
-                    page.wait_for_timeout(600)
-                    page.locator("button.btn_g.btn_g2").click(timeout=5_000)
-                    page.wait_for_timeout(400)
                 except PWTimeout:
-                    pass  # 상담완료 버튼은 선택사항 — 전송 자체는 성공
+                    pass  # 상담완료 버튼 없으면 skip
+                else:
+                    try:
+                        page.locator("button.btn_g_m").first.click(timeout=8_000)
+                    except PWTimeout:
+                        pass
+                    else:
+                        try:
+                            page.locator("button.btn_g.btn_g2").click(timeout=8_000)
+                            page.wait_for_timeout(400)
+                        except PWTimeout:
+                            pass
 
                 return True, ""
 
