@@ -1,4 +1,4 @@
-Set ws = CreateObject("WScript.Shell")
+Set ws  = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
 dir = fso.GetParentFolderName(WScript.ScriptFullName)
-ws.Run "cmd /c """ & dir & "\run.bat""", 0, False
+ws.Run "powershell -WindowStyle Hidden -NonInteractive -ExecutionPolicy Bypass -File """ & dir & "\run.ps1""", 0, False
