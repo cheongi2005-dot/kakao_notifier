@@ -340,11 +340,11 @@ class App(TkinterDnD.Tk if _DND_OK else tk.Tk):
 
         # ══ [왼쪽] 메시지 ═════════════════════════════════════════
         tk.Label(left, text="메시지 내용", font=FB, bg=BG, fg=DARK).pack(anchor="w")
-        self._msg = tk.Text(left, font=F, width=38, height=4,
+        self._msg = tk.Text(left, font=F, height=4,
                             relief="flat", bd=0, bg=WHITE, fg=DARK,
                             highlightthickness=1, highlightbackground=BORDER,
                             highlightcolor=YELLOW, wrap="word")
-        self._msg.pack(anchor="w", pady=(4, 6))
+        self._msg.pack(fill="x", pady=(4, 6))
 
         # ══ [왼쪽] 파일 첨부 ══════════════════════════════════════
         file_hdr = tk.Frame(left, bg=BG)
@@ -392,9 +392,9 @@ class App(TkinterDnD.Tk if _DND_OK else tk.Tk):
         # ══ [왼쪽] 전송 버튼 ══════════════════════════════════════
         self._send_btn = tk.Button(left, text="전송", font=FB,
                                    bg=YELLOW, fg=DARK, relief="flat", bd=0,
-                                   width=36, height=2, cursor="hand2",
+                                   height=2, cursor="hand2",
                                    command=self._on_send)
-        self._send_btn.pack(anchor="w", pady=(2, 8))
+        self._send_btn.pack(fill="x", pady=(2, 8))
         self._send_btn.bind("<Enter>", lambda e: self._send_btn.config(bg=Y_HOV))
         self._send_btn.bind("<Leave>", lambda e: self._send_btn.config(bg=YELLOW))
 
