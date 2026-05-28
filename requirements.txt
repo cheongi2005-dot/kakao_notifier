@@ -2,3 +2,4 @@ requests
 playwright
 pywin32
 pycryptodomex
+tkinterdnd2

@@ -3,18 +3,21 @@
 로그인 방식:
   Stage 1. Chrome 쿠키 DB 직접 읽기 (Chrome 실행 중이어도 동작)
   Stage 2. Playwright Chromium headed 로그인 (Chrome 설치 불필요)
-메시지 전송: Playwright headless → textarea.tf_g → btn_submit → 상담완료
+메시지 전송: requests 직접 API 호출 (브라우저 불필요)
 """
 import base64
 import json
+import mimetypes
 import os
 import shutil
 import sqlite3
+import struct
 import sys
 import tempfile
 import time
 import requests
 from pathlib import Path
+from urllib.parse import quote
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
 import config
@@ -420,10 +423,179 @@ def _write_log(msg: str) -> None:
         pass
 
 
-def send_message(name: str, message: str) -> tuple[bool, str]:
-    """백그라운드(headless) 브라우저로 메시지 전송.
+_API_BASE    = f"https://business.kakao.com/api/profiles/{PROFILE_ID}/chats"
+_IMAGE_EXTS  = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+_VIDEO_EXTS  = {".mp4", ".mov", ".avi", ".mkv", ".wmv", ".webm"}
+
+
+def _api_hdrs(session: dict, referer: str = CHAT_BASE) -> dict:
+    hdrs = {
+        "Accept":     "*/*",
+        "Origin":     "https://business.kakao.com",
+        "Referer":    referer,
+        "User-Agent": _HEADERS["User-Agent"],
+    }
+    token = session.get("token", "")
+    if token:
+        hdrs["Authorization"] = f"Bearer {token}"
+    return hdrs
+
+
+def _img_size(path: str) -> tuple[int, int]:
+    """PNG / JPEG 이미지 크기 반환."""
+    with open(path, "rb") as f:
+        hdr = f.read(24)
+    if hdr[:8] == b"\x89PNG\r\n\x1a\n":
+        return struct.unpack(">II", hdr[16:24])
+    if hdr[:2] == b"\xff\xd8":
+        with open(path, "rb") as f:
+            f.seek(2)
+            while True:
+                m = f.read(2)
+                if len(m) < 2 or m[0] != 0xFF:
+                    break
+                n = struct.unpack(">H", f.read(2))[0]
+                if m[1] in (0xC0, 0xC1, 0xC2, 0xC3):
+                    f.read(1)
+                    h, w = struct.unpack(">HH", f.read(4))
+                    return w, h
+                f.seek(n - 2, 1)
+    return 0, 0
+
+
+def _file_category(path: str) -> str:
+    ext = os.path.splitext(path)[1].lower()
+    if ext in _IMAGE_EXTS:
+        return "image"
+    if ext in _VIDEO_EXTS:
+        return "video"
+    return "document"
+
+
+def _api_send_text(chat_url: str, web_url: str, message: str, session: dict) -> None:
+    r = requests.post(
+        f"{chat_url}/chatlogs",
+        headers=_api_hdrs(session, web_url),
+        cookies=session.get("cookies", {}),
+        files=[("text", (None, message))],
+        timeout=15,
+    )
+    r.raise_for_status()
+
+
+def _api_send_image(chat_url: str, web_url: str, file_path: str, session: dict) -> None:
+    mime, _ = mimetypes.guess_type(file_path)
+    mime = mime or "image/jpeg"
+    w, h   = _img_size(file_path)
+    fname  = os.path.basename(file_path)
+    with open(file_path, "rb") as f:
+        data = f.read()
+    r = requests.post(
+        f"{chat_url}/chatlogs",
+        headers=_api_hdrs(session, web_url),
+        cookies=session.get("cookies", {}),
+        files=[
+            ("image",    (fname, data, mime)),
+            ("width",    (None,  str(w))),
+            ("height",   (None,  str(h))),
+            ("mimetype", (None,  mime)),
+        ],
+        timeout=60,
+    )
+    r.raise_for_status()
+
+
+def _api_send_document(chat_url: str, web_url: str, file_path: str, session: dict) -> None:
+    file_size = os.path.getsize(file_path)
+    fname     = os.path.basename(file_path)
+    mime, _   = mimetypes.guess_type(file_path)
+    mime      = mime or ""
+    hdrs      = _api_hdrs(session, web_url)
+    hdrs["Content-Type"] = "application/octet-stream"
+    url = (f"{chat_url}/chatlogs"
+           f"?mimetype={quote(mime)}&fileSize={file_size}&fileName={quote(fname)}")
+    with open(file_path, "rb") as f:
+        data = f.read()
+    r = requests.post(
+        url,
+        headers=hdrs,
+        cookies=session.get("cookies", {}),
+        data=data,
+        timeout=120,
+    )
+    r.raise_for_status()
+
+
+def _api_send_video(chat_url: str, web_url: str, file_path: str, session: dict) -> None:
+    file_size = os.path.getsize(file_path)
+    fname     = os.path.basename(file_path)
+    hdrs      = _api_hdrs(session, web_url)
+    cookies   = session.get("cookies", {})
+
+    # 1단계: 업로드 세션 생성 → upload_token 획득
+    r = requests.post(
+        f"{chat_url}/videos/parts/session",
+        headers=hdrs,
+        cookies=cookies,
+        json={"file_name": fname, "file_size": file_size},
+        timeout=15,
+    )
+    r.raise_for_status()
+    upload_token = r.json()["upload_token"]
+
+    # 2단계: 파일 업로드
+    with open(file_path, "rb") as f:
+        video_data = f.read()
+    r = requests.post(
+        f"{chat_url}/videos/parts",
+        headers=hdrs,
+        cookies=cookies,
+        files=[
+            ("fileName",    (None, fname)),
+            ("fileSize",    (None, str(file_size))),
+            ("partOffset",  (None, "0")),
+            ("partSize",    (None, str(file_size))),
+            ("video",       ("blob", video_data, "application/octet-stream")),
+            ("uploadToken", (None, upload_token)),
+        ],
+        timeout=300,
+    )
+    r.raise_for_status()
+
+    # 3단계: 트랜스코딩 완료까지 폴링 (최대 120초)
+    for _ in range(60):
+        r = requests.post(
+            f"{chat_url}/videos/parts/status",
+            headers=hdrs,
+            cookies=cookies,
+            json={"file_name": fname, "upload_token": upload_token},
+            timeout=15,
+        )
+        r.raise_for_status()
+        if r.json().get("status") != "transcoding":
+            break
+        time.sleep(2)
+    else:
+        raise TimeoutError("동영상 트랜스코딩 타임아웃 (120초)")
+
+    # 4단계: 채팅에 동영상 메시지 전송
+    r = requests.post(
+        f"{chat_url}/chatlogs",
+        headers=hdrs,
+        cookies=cookies,
+        files=[("video", (None, upload_token))],
+        timeout=15,
+    )
+    r.raise_for_status()
+
+
+def send_message(name: str, message: str, file_paths: list[str] | None = None) -> tuple[bool, str]:
+    """requests 직접 API로 메시지/파일 전송 (브라우저 불필요).
     반환값: (성공여부, 실패이유 또는 "")
     """
+    if not message:
+        return False, "메시지 없음 (파일 전송 시에도 메시지 필수)"
+
     try:
         session = _load_session()
     except FileNotFoundError:
@@ -433,89 +605,31 @@ def send_message(name: str, message: str) -> tuple[bool, str]:
     if not chat_id:
         return False, "채팅방 검색 실패"
 
-    chat_url    = f"{CHAT_BASE}/{chat_id}"
-    cookie_list = [
-        {"name": k, "value": v, "domain": ".kakao.com", "path": "/"}
-        for k, v in session.get("cookies", {}).items()
-    ]
-
-    local_storage = session.get("local_storage", {})
+    chat_url = f"{_API_BASE}/{chat_id}"
+    web_url  = f"{CHAT_BASE}/{chat_id}"
 
     try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(
-                headless=True,
-                slow_mo=150,
-                args=["--no-sandbox", "--disable-dev-shm-usage"],
-            )
-            ctx  = browser.new_context()
-            ctx.add_cookies(cookie_list)
-            page = ctx.new_page()
-
-            # localStorage 주입 (추가인증 상태 복원)
-            if local_storage:
-                try:
-                    page.goto("https://business.kakao.com",
-                              wait_until="domcontentloaded", timeout=15_000)
-                    page.evaluate(
-                        "ls => { for (const [k,v] of Object.entries(ls)) "
-                        "localStorage.setItem(k, v); }",
-                        local_storage,
-                    )
-                except Exception:
-                    pass
-
-            try:
-                page.goto(chat_url, wait_until="domcontentloaded", timeout=25_000)
-                page.wait_for_timeout(2000)
-
-                # 로그인 페이지로 리다이렉트 되면 세션 만료
-                cur = page.url
-                if ("accounts.kakao.com" in cur or "biz-auth.kakao.com" in cur
-                        or "login" in cur.lower()):
-                    return False, f"세션 만료 (→ {cur[:80]})"
-
-                # 관리자 추가인증 만료 모달 감지
-                modal = page.locator("div[role=dialog]")
-                if modal.count() > 0:
-                    txt = modal.first.inner_text()
-                    if "추가인증" in txt:
-                        return False, "추가인증 만료"
-
-                msg_box = page.locator("textarea.tf_g").first
-                msg_box.wait_for(timeout=10_000)
-                msg_box.click()
-                msg_box.fill(message)
-                page.wait_for_timeout(300)
-
-                page.locator("button.btn_submit").click(timeout=5_000)
-                page.wait_for_timeout(600)
-
-                try:
-                    page.locator("button.btn_state").click(timeout=10_000)
-                except PWTimeout:
-                    pass  # 상담완료 버튼 없으면 skip
+        if file_paths:
+            for fp in file_paths:
+                if not os.path.exists(fp):
+                    return False, f"파일 없음: {fp}"
+                cat = _file_category(fp)
+                if cat == "image":
+                    _api_send_image(chat_url, web_url, fp, session)
+                elif cat == "video":
+                    _api_send_video(chat_url, web_url, fp, session)
                 else:
-                    try:
-                        page.locator("button.btn_g_m").first.click(timeout=8_000)
-                    except PWTimeout:
-                        pass
-                    else:
-                        try:
-                            page.locator("button.btn_g.btn_g2").click(timeout=8_000)
-                            page.wait_for_timeout(400)
-                        except PWTimeout:
-                            pass
+                    _api_send_document(chat_url, web_url, fp, session)
 
-                return True, ""
+        _api_send_text(chat_url, web_url, message, session)
+        return True, ""
 
-            except PWTimeout:
-                return False, "페이지 로딩 또는 메시지 전송 시간 초과"
-            except Exception as e:
-                _write_log(f"page error ({name}): {type(e).__name__}: {e}")
-                return False, f"{type(e).__name__}: {str(e)[:200]}"
-            finally:
-                browser.close()
+    except requests.HTTPError as e:
+        status = e.response.status_code
+        if status == 401:
+            return False, "세션 만료"
+        _write_log(f"API error ({name}): {status} {e.response.text[:200]}")
+        return False, f"API 오류 {status}"
     except Exception as e:
-        _write_log(f"launch error ({name}): {type(e).__name__}: {e}")
-        return False, f"브라우저 시작 실패: {str(e)[:200]}"
+        _write_log(f"send error ({name}): {type(e).__name__}: {e}")
+        return False, f"{type(e).__name__}: {str(e)[:200]}"

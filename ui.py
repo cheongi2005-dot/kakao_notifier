@@ -1,5 +1,10 @@
 import sys, os, threading, time, json, requests, multiprocessing
 from concurrent.futures import ThreadPoolExecutor, as_completed
+try:
+    from tkinterdnd2 import TkinterDnD, DND_FILES
+    _DND_OK = True
+except Exception:
+    _DND_OK = False
 
 # PyInstaller --noconsole (console=False) 환경에서 print() 에러 방지
 if sys.stdout is None:
@@ -50,6 +55,25 @@ def _load_session():
             except Exception:
                 continue
     return {}
+
+# ── 파일 저장/불러오기 ────────────────────────────────────────────────────────
+def _files_path():
+    return SESSION_FILE.parent / "kakao_files.json"
+
+def _load_files() -> list:
+    p = _files_path()
+    if p.exists():
+        try:
+            paths = json.loads(p.read_text(encoding="utf-8"))
+            return [p for p in paths if os.path.exists(p)]
+        except Exception:
+            pass
+    return []
+
+def _save_files(paths: list) -> None:
+    p = _files_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(paths, ensure_ascii=False), encoding="utf-8")
 
 # ── 그룹 저장/불러오기 ────────────────────────────────────────────────────────
 def _groups_path():
@@ -137,7 +161,7 @@ def _kakao_search(keyword: str, session: dict, my_id) -> list[dict]:
         return []
 
 
-class App(tk.Tk):
+class App(TkinterDnD.Tk if _DND_OK else tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("카카오톡 알림 전송")
@@ -156,6 +180,7 @@ class App(tk.Tk):
         self._sched_jobs: dict = {}       # job_id → {label, cancelled}
         self._sched_counter = 0           # 예약 ID 생성용 단조증가 카운터
         self._search_after = None
+        self._file_paths: list[str] = _load_files()
 
         self._build()
         self._center()
@@ -166,6 +191,7 @@ class App(tk.Tk):
         self.bind_all("<MouseWheel>", self._on_wheel)
 
         self.after(100, self._init_session)
+        self.after(100, self._refresh_file_list)
 
     # ── 초기화 ────────────────────────────────────────────────────
     def _init_session(self):
@@ -318,7 +344,27 @@ class App(tk.Tk):
                             relief="flat", bd=0, bg=WHITE, fg=DARK,
                             highlightthickness=1, highlightbackground=BORDER,
                             highlightcolor=YELLOW, wrap="word")
-        self._msg.pack(anchor="w", pady=(4, 10))
+        self._msg.pack(anchor="w", pady=(4, 6))
+
+        # ══ [왼쪽] 파일 첨부 ══════════════════════════════════════
+        file_hdr = tk.Frame(left, bg=BG)
+        file_hdr.pack(fill="x", pady=(0, 3))
+        tk.Label(file_hdr, text="첨부 파일", font=FB, bg=BG, fg=DARK).pack(side="left")
+        tk.Button(file_hdr, text="+ 추가", font=FS,
+                  bg=LGRAY, fg=DARK, relief="flat", bd=0,
+                  cursor="hand2", padx=8, pady=2,
+                  command=self._on_file_select).pack(side="left", padx=(8, 0))
+        self._file_clear_all_btn = tk.Button(file_hdr, text="전체 삭제", font=FS,
+                  bg=LGRAY, fg=RED, relief="flat", bd=0,
+                  cursor="hand2", padx=8, pady=2,
+                  command=self._clear_all_files)
+
+        self._file_list_box = tk.Frame(left, bg=LGRAY,
+                                       highlightthickness=1, highlightbackground=BORDER)
+        self._file_list_box.pack(fill="x", pady=(0, 8))
+        if _DND_OK:
+            self._file_list_box.drop_target_register(DND_FILES)
+            self._file_list_box.dnd_bind("<<Drop>>", self._on_file_drop)
 
         # ══ [왼쪽] 예약 전송 체크박스 + 날짜/시간 ═════════════════
         sched_row = tk.Frame(left, bg=BG)
@@ -376,12 +422,20 @@ class App(tk.Tk):
                     self._chip_canvas.yview_scroll(-1 * (event.delta // 120), "units")
                     return
                 w = getattr(w, "master", None)
-            self._canvas.yview_scroll(-1 * (event.delta // 120), "units")
+            delta = -1 * (event.delta // 120)
+            top, bottom = self._canvas.yview()
+            if delta < 0 and top <= 0:
+                return
+            if delta > 0 and bottom >= 1.0:
+                return
+            self._canvas.yview_scroll(delta, "units")
         except Exception:
             pass
 
     def _on_list_cfg(self, _=None):
-        self._canvas.configure(scrollregion=self._canvas.bbox("all"))
+        bb = self._canvas.bbox("all")
+        if bb:
+            self._canvas.configure(scrollregion=(0, 0, bb[2], bb[3]))
         self._canvas.itemconfig(self._cwin, width=self._canvas.winfo_width())
 
     # ── 담당 필터 ─────────────────────────────────────────────────
@@ -428,6 +482,7 @@ class App(tk.Tk):
         self._result_vars.clear()
         for w in self._list_frame.winfo_children():
             w.destroy()
+        self._canvas.yview_moveto(0)
 
         selected_names = {s["name"] for s in self._selected}
         for r in results:
@@ -550,6 +605,91 @@ class App(tk.Tk):
             self._ent_time.pack_forget()
             self._send_btn.config(text="전송")
 
+    # ── 파일 첨부 ─────────────────────────────────────────────────
+    def _on_file_drop(self, event):
+        """탐색기에서 드래그 앤 드롭으로 파일 추가."""
+        raw = event.data
+        # tkinterdnd2는 여러 파일을 '{path1} {path2}' 또는 '{path with space}' 형식으로 전달
+        paths = []
+        if raw.startswith("{"):
+            import re
+            paths = re.findall(r"\{([^}]+)\}", raw)
+            rest  = re.sub(r"\{[^}]+\}", "", raw).split()
+            paths += rest
+        else:
+            paths = raw.split()
+        new = [p for p in paths if os.path.isfile(p) and p not in self._file_paths]
+        if new:
+            self._file_paths.extend(new)
+            self._refresh_file_list()
+
+    def _on_file_select(self):
+        from tkinter import filedialog
+        paths = filedialog.askopenfilenames(
+            parent=self,
+            title="파일 선택 (여러 개 가능)",
+            filetypes=[
+                ("이미지", "*.png *.jpg *.jpeg *.gif *.webp *.bmp"),
+                ("동영상", "*.mp4 *.mov *.avi *.mkv *.wmv *.webm"),
+                ("문서", "*.pdf *.hwp *.docx *.doc *.xlsx *.xls *.pptx *.ppt *.txt"),
+                ("모든 파일", "*.*"),
+            ],
+        )
+        if paths:
+            self._file_paths.extend(p for p in paths if p not in self._file_paths)
+            self._refresh_file_list()
+
+    def _remove_file(self, path: str):
+        if path in self._file_paths:
+            self._file_paths.remove(path)
+        self._refresh_file_list()
+
+    def _clear_all_files(self):
+        self._file_paths.clear()
+        self._refresh_file_list()
+
+    def _file_type_tag(self, path: str) -> tuple[str, str]:
+        """(태그텍스트, 색상)"""
+        ext = os.path.splitext(path)[1].lower()
+        if ext in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"):
+            return "이미지", BLUE
+        if ext in (".mp4", ".mov", ".avi", ".mkv", ".wmv", ".webm"):
+            return "영상", "#9B59B6"
+        return "문서", "#27AE60"
+
+    def _refresh_file_list(self):
+        _save_files(self._file_paths)
+
+        for w in self._file_list_box.winfo_children():
+            w.destroy()
+
+        if not self._file_paths:
+            hint = "여기에 파일을 끌어다 놓거나 '+ 추가'로 선택" if _DND_OK else "첨부 파일 없음"
+            tk.Label(self._file_list_box, text=hint,
+                     font=FS, bg=LGRAY, fg=GRAY,
+                     padx=8, pady=5).pack(anchor="w")
+            self._file_clear_all_btn.pack_forget()
+            return
+
+        self._file_clear_all_btn.pack(side="left", padx=(6, 0))
+
+        for path in list(self._file_paths):
+            tag, color = self._file_type_tag(path)
+            fname = os.path.basename(path)
+            display = fname if len(fname) <= 32 else fname[:29] + "..."
+
+            row = tk.Frame(self._file_list_box, bg=LGRAY)
+            row.pack(fill="x", padx=4, pady=2)
+
+            tk.Label(row, text=f"[{tag}]", font=FS, bg=LGRAY, fg=color,
+                     width=5, anchor="w").pack(side="left")
+            tk.Label(row, text=display, font=FS, bg=LGRAY, fg=DARK,
+                     anchor="w").pack(side="left", fill="x", expand=True)
+            tk.Button(row, text="×", font=FSB, bg=LGRAY, fg=RED,
+                      relief="flat", bd=0, cursor="hand2", padx=6,
+                      command=lambda p=path: self._remove_file(p)
+                      ).pack(side="right")
+
     # ── 전송 ─────────────────────────────────────────────────────
     def _on_send(self):
         if not self._selected:
@@ -557,14 +697,18 @@ class App(tk.Tk):
             return
         msg = self._msg.get("1.0", "end").strip()
         if not msg:
-            messagebox.showwarning("입력 필요", "메시지를 입력하세요.")
+            messagebox.showwarning(
+                "입력 필요",
+                "파일 첨부 시에도 메시지가 필요합니다." if self._file_paths else "메시지를 입력하세요.",
+            )
             return
+        fps = list(self._file_paths) if self._file_paths else None
         if self._sched_var.get():
-            self._register_sched(list(self._selected), msg)
+            self._register_sched(list(self._selected), msg, fps)
         else:
-            self._start_send(list(self._selected), msg)
+            self._start_send(list(self._selected), msg, fps)
 
-    def _register_sched(self, targets, msg):
+    def _register_sched(self, targets, msg, file_paths=None):
         try:
             dt = datetime.strptime(
                 f"{self._date_var.get()} {self._time_var.get()}", "%Y-%m-%d %H:%M")
@@ -582,7 +726,9 @@ class App(tk.Tk):
         # 예약 큐에 추가 (버튼은 계속 활성)
         self._sched_counter += 1
         job_id = self._sched_counter
-        self._sched_jobs[job_id] = {"label": label, "msg": msg, "cancelled": False}
+        self._sched_jobs[job_id] = {
+            "label": label, "msg": msg, "file_paths": file_paths, "cancelled": False,
+        }
         self._refresh_sched_list()
 
         def _wait():
@@ -592,7 +738,7 @@ class App(tk.Tk):
                 return
             self._sched_jobs.pop(job_id, None)
             self.after(0, self._refresh_sched_list)
-            self._start_send(targets, msg)
+            self._start_send(targets, msg, file_paths)
 
         threading.Thread(target=_wait, daemon=True).start()
 
@@ -627,26 +773,36 @@ class App(tk.Tk):
                 preview = msg_txt[:40] + ("…" if len(msg_txt) > 40 else "")
                 tk.Label(card, text=f"💬 {preview}", font=FS, bg=CHIP, fg=GRAY,
                          wraplength=170, justify="left",
+                         padx=8, pady=(0, 2)).pack(anchor="w")
+            fps = job.get("file_paths")
+            if fps:
+                n = len(fps)
+                fdisplay = (os.path.basename(fps[0]) if n == 1
+                            else f"{os.path.basename(fps[0])} 외 {n-1}개")
+                if len(fdisplay) > 22:
+                    fdisplay = fdisplay[:19] + "..."
+                tk.Label(card, text=f"📎 {fdisplay}", font=FS, bg=CHIP, fg=GRAY,
+                         wraplength=170, justify="left",
                          padx=8, pady=(0, 4)).pack(anchor="w")
             tk.Button(card, text="취소", font=FS, bg=CHIP, fg=RED,
                       relief="flat", bd=0, cursor="hand2", padx=8, pady=3,
                       command=lambda jid=job_id: self._cancel_sched(jid)
                       ).pack(anchor="e", padx=6, pady=(0, 4))
 
-    def _start_send(self, targets, msg):
+    def _start_send(self, targets, msg, file_paths=None):
         # 버튼은 건드리지 않고 상태만 표시
         self._status.config(
             text=f"전송 중: {len(targets)}명 (백그라운드)...", fg=GRAY)
         threading.Thread(target=self._send_thread,
-                         args=(targets, msg), daemon=True).start()
+                         args=(targets, msg, file_paths), daemon=True).start()
 
-    def _send_thread(self, targets, msg):
+    def _send_thread(self, targets, msg, file_paths=None):
         ok_list  = []
         fail_map = {}   # name → reason
         total    = len(targets)
 
         with ThreadPoolExecutor(max_workers=2) as pool:
-            futures = {pool.submit(send_message, t["name"], msg): t["name"]
+            futures = {pool.submit(send_message, t["name"], msg, file_paths): t["name"]
                        for t in targets}
             for future in as_completed(futures):
                 name = futures[future]
@@ -761,9 +917,12 @@ class App(tk.Tk):
                                 highlightthickness=1, highlightbackground=CHIP_B)
                 card.pack(fill="x", pady=(0, 10), padx=2)
 
-                # ── 헤더: 그룹명 + 인원수 + 그룹 삭제 ──
-                hdr = tk.Frame(card, bg=CHIP)
-                hdr.pack(fill="x", padx=10, pady=(8, 4))
+                # ── 헤더: 클릭으로 접고 펼침 ──
+                hdr = tk.Frame(card, bg=CHIP, cursor="hand2")
+                hdr.pack(fill="x", padx=10, pady=(8, 6))
+
+                arrow_lbl = tk.Label(hdr, text="▶", font=FS, bg=CHIP, fg=GRAY)
+                arrow_lbl.pack(side="left", padx=(0, 4))
                 tk.Label(hdr, text=gname, font=FB, bg=CHIP, fg=DARK).pack(side="left")
                 tk.Label(hdr, text=f"({len(members)}명)", font=FS,
                          bg=CHIP, fg=GRAY).pack(side="left", padx=4)
@@ -783,13 +942,15 @@ class App(tk.Tk):
                           cursor="hand2", padx=8, pady=2,
                           command=_make_del()).pack(side="right")
 
-                # ── 멤버 목록 (이름 + 개별 삭제) ──
+                # ── 접힌 본문 (멤버 + 액션 버튼) ──
+                body_frame = tk.Frame(card, bg=CHIP)
+
                 if members:
-                    sep = tk.Frame(card, bg=BORDER, height=1)
+                    sep = tk.Frame(body_frame, bg=BORDER, height=1)
                     sep.pack(fill="x", padx=10, pady=(0, 4))
 
                     for m in members:
-                        mrow = tk.Frame(card, bg=CHIP)
+                        mrow = tk.Frame(body_frame, bg=CHIP)
                         mrow.pack(fill="x", padx=10, pady=1)
                         tk.Label(mrow, text="•  " + m["name"], font=F,
                                  bg=CHIP, fg=DARK).pack(side="left")
@@ -809,11 +970,10 @@ class App(tk.Tk):
                                   cursor="hand2", padx=6, pady=0,
                                   command=_make_rm()).pack(side="left", padx=(6, 0))
                 else:
-                    tk.Label(card, text="(멤버 없음)", font=FS,
+                    tk.Label(body_frame, text="(멤버 없음)", font=FS,
                              bg=CHIP, fg=GRAY, padx=10).pack(anchor="w", pady=(0, 4))
 
-                # ── 액션 버튼 ──
-                btn_row = tk.Frame(card, bg=CHIP)
+                btn_row = tk.Frame(body_frame, bg=CHIP)
                 btn_row.pack(fill="x", padx=10, pady=(6, 8))
 
                 def _make_load_all(g=gname):
@@ -854,6 +1014,25 @@ class App(tk.Tk):
                           bg=LGRAY, fg=DARK, relief="flat", bd=0,
                           cursor="hand2", padx=8, pady=3,
                           command=_make_add_sel()).pack(side="left", padx=(6, 0))
+
+                # ── 토글 함수 ──
+                def _make_toggle(bf=body_frame, al=arrow_lbl):
+                    expanded = [False]
+                    def _toggle(_=None):
+                        if expanded[0]:
+                            bf.pack_forget()
+                            al.config(text="▶")
+                        else:
+                            bf.pack(fill="x")
+                            al.config(text="▼")
+                        expanded[0] = not expanded[0]
+                    return _toggle
+
+                toggle_fn = _make_toggle()
+                hdr.bind("<Button-1>", toggle_fn)
+                for child in hdr.winfo_children():
+                    if not isinstance(child, tk.Button):
+                        child.bind("<Button-1>", toggle_fn)
 
         _refresh()
 
@@ -915,7 +1094,11 @@ class App(tk.Tk):
         self.geometry(f"{w}x{h}+{x}+{y}")
 
     def _center(self):
-        self._refit()
+        w, h = 720, 900
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        x = (sw - w) // 2
+        y = (sh - h) // 2
+        self.geometry(f"{w}x{h}+{x}+{y}")
 
 
 if __name__ == "__main__":

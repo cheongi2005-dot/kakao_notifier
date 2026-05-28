@@ -39,11 +39,10 @@ if not defined PYEXE ( echo ERROR: Python not found. Please install Python 3.11+
 if not exist "%VENV%\Scripts\python.exe" (
     "%PYEXE%" -m venv "%VENV%"
     if errorlevel 1 ( pause & exit /b 1 )
-    "%VENV%\Scripts\pip" install -r "%~dp0requirements.txt"
-    if errorlevel 1 ( pause & exit /b 1 )
     "%VENV%\Scripts\python.exe" -m playwright install chromium
     if errorlevel 1 ( pause & exit /b 1 )
 )
+"%VENV%\Scripts\pip" install -q -r "%~dp0requirements.txt"
 start "kakao_notifier" "%VENV%\Scripts\pythonw.exe" "%~dp0ui.py"
 exit /b 0
 
@@ -51,10 +50,9 @@ exit /b 0
 if not exist "%VENV%\Scripts\python.exe" (
     uv venv --seed "%VENV%"
     if errorlevel 1 ( pause & exit /b 1 )
-    "%VENV%\Scripts\python.exe" -m pip install -r "%~dp0requirements.txt"
-    if errorlevel 1 ( pause & exit /b 1 )
     "%VENV%\Scripts\python.exe" -m playwright install chromium
     if errorlevel 1 ( pause & exit /b 1 )
 )
+"%VENV%\Scripts\python.exe" -m pip install -q -r "%~dp0requirements.txt"
 start "kakao_notifier" "%VENV%\Scripts\pythonw.exe" "%~dp0ui.py"
 exit /b 0
