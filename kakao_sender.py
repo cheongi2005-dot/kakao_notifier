@@ -596,6 +596,22 @@ def _pw_complete(web_url: str, session: dict) -> None:
         for k, v in session.get("cookies", {}).items()
     ]
     local_storage = session.get("local_storage", {})
+
+    # pythonw.exe 환경에서 Playwright Node.js 드라이버 subprocess 창이 뜨는 문제 방지:
+    # CREATE_NO_WINDOW 제거(libuv 크래시 방지) + SW_HIDE(창 숨김) 동시 적용
+    import subprocess as _sp
+    _orig_Popen = _sp.Popen
+    class _PatchedPopen(_orig_Popen):
+        def __init__(self, *a, **kw):
+            if sys.platform == "win32":
+                kw["creationflags"] = kw.get("creationflags", 0) & ~0x08000000
+                if "startupinfo" not in kw:
+                    si = _sp.STARTUPINFO()
+                    si.dwFlags = _sp.STARTF_USESHOWWINDOW
+                    si.wShowWindow = 0  # SW_HIDE
+                    kw["startupinfo"] = si
+            super().__init__(*a, **kw)
+    _sp.Popen = _PatchedPopen
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(
@@ -633,6 +649,8 @@ def _pw_complete(web_url: str, session: dict) -> None:
                 browser.close()
     except Exception:
         pass
+    finally:
+        _sp.Popen = _orig_Popen
 
 
 def send_message(name: str, message: str, file_paths: list[str] | None = None) -> tuple[bool, str]:
