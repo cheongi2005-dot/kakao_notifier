@@ -20,8 +20,6 @@ from pathlib import Path
 from urllib.parse import quote
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
-import config
-
 # Playwright 브라우저 경로: run.bat이 설정하지만 직접 실행 시에도 동작하도록 폴백 설정
 if not os.environ.get("PLAYWRIGHT_BROWSERS_PATH"):
     os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "C:/Users/Public/kakao_pw_browsers"
@@ -414,9 +412,10 @@ def _write_login_error(exc: Exception) -> None:
 def _write_log(msg: str) -> None:
     """에러 로그를 세션 파일 옆에 기록."""
     try:
+        import sys as _sys, traceback as _tb
         log_path = SESSION_FILE.parent / "send_error.log"
-        import traceback as _tb
-        entry = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n{_tb.format_exc()}\n---\n"
+        tb = _tb.format_exc() if _sys.exc_info()[0] is not None else ""
+        entry = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n{tb}---\n"
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(entry)
     except Exception:
@@ -541,7 +540,9 @@ def _api_send_video(chat_url: str, web_url: str, file_path: str, session: dict) 
         timeout=15,
     )
     r.raise_for_status()
-    upload_token = r.json()["upload_token"]
+    upload_token = r.json().get("upload_token")
+    if not upload_token:
+        raise RuntimeError("업로드 세션 생성 실패: upload_token 없음")
 
     # 2단계: 파일 업로드
     with open(file_path, "rb") as f:
@@ -572,7 +573,10 @@ def _api_send_video(chat_url: str, web_url: str, file_path: str, session: dict) 
             timeout=15,
         )
         r.raise_for_status()
-        if r.json().get("status") != "transcoding":
+        st = r.json().get("status", "")
+        if st == "failed":
+            raise RuntimeError("동영상 트랜스코딩 실패")
+        if st != "transcoding":
             break
         time.sleep(2)
     else:
@@ -589,8 +593,10 @@ def _api_send_video(chat_url: str, web_url: str, file_path: str, session: dict) 
     r.raise_for_status()
 
 
-def _pw_complete(web_url: str, session: dict) -> None:
-    """headless 브라우저로 상담완료 버튼 클릭 (WebSocket 기반이라 API 불가)."""
+def _pw_complete(web_url: str, session: dict) -> bool:
+    """headless 브라우저로 상담완료 버튼 클릭 (WebSocket 기반이라 API 불가).
+    반환값: True=완료 클릭 성공, False=실패(버튼 없음·세션 만료·에러 등)
+    """
     cookie_list = [
         {"name": k, "value": v, "domain": ".kakao.com", "path": "/"}
         for k, v in session.get("cookies", {}).items()
@@ -634,21 +640,58 @@ def _pw_complete(web_url: str, session: dict) -> None:
                     pass
             try:
                 page.goto(web_url, wait_until="domcontentloaded", timeout=25_000)
+
+                # 로그인/추가인증 페이지로 리다이렉션 감지
+                cur = page.url
+                if ("login" in cur.lower()
+                        or "accounts.kakao.com" in cur
+                        or "biz-auth.kakao.com" in cur):
+                    _write_log(f"_pw_complete: 인증 페이지로 리다이렉션 → {cur}")
+                    return False
+
                 page.wait_for_timeout(1500)
-                page.locator("button.btn_state").first.click(timeout=8_000)
-                page.wait_for_timeout(500)
+
+                # btn_state 클릭 (timeout=8s: 버튼 미출현 시 PWTimeout)
+                try:
+                    page.locator("button.btn_state").first.click(timeout=8_000)
+                except PWTimeout:
+                    _write_log(f"_pw_complete: btn_state 버튼 없음 (이미 완료 상태?) → {web_url}")
+                    return False
+
+                # 확인 다이얼로그 버튼 클릭 (클래스 선택자 → role/텍스트 폴백 순서)
+                confirmed = False
+
+                # 1순위: 기존 클래스 선택자
                 for sel in ("button.btn_g_m", "button.btn_g.btn_g2"):
                     try:
                         page.locator(sel).first.click(timeout=4_000)
-                        page.wait_for_timeout(400)
+                        confirmed = True
+                        break
                     except PWTimeout:
                         pass
-            except Exception:
-                pass
+
+                # 2순위: ARIA role + 텍스트 폴백 (카카오 UI 클래스 변경에 대응)
+                if not confirmed:
+                    for label in ("확인", "완료", "상담완료"):
+                        try:
+                            page.get_by_role("button", name=label).last.click(timeout=3_000)
+                            confirmed = True
+                            break
+                        except PWTimeout:
+                            pass
+
+                if not confirmed:
+                    _write_log(f"_pw_complete: 확인 다이얼로그 버튼 없음 → {web_url}")
+                return confirmed
+
+            except Exception as e:
+                _write_log(f"_pw_complete: 예외 → {type(e).__name__}: {e}")
+                return False
             finally:
                 browser.close()
-    except Exception:
-        pass
+    except Exception as e:
+        _write_log(f"_pw_complete: 브라우저 실행 실패 → {type(e).__name__}: {e}")
+        return False
     finally:
         _sp.Popen = _orig_Popen
 
@@ -686,8 +729,8 @@ def send_message(name: str, message: str, file_paths: list[str] | None = None) -
                     _api_send_document(chat_url, web_url, fp, session)
 
         _api_send_text(chat_url, web_url, message, session)
-        _pw_complete(web_url, session)
-        return True, ""
+        completed = _pw_complete(web_url, session)
+        return True, "" if completed else "완료버튼 미처리"
 
     except requests.HTTPError as e:
         status = e.response.status_code

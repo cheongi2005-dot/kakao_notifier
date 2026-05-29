@@ -10,7 +10,7 @@ if (Get-Command uv -ErrorAction SilentlyContinue) {
         & uv venv --seed $VENV | Out-Null
         & "$VENV\Scripts\python.exe" -m playwright install chromium | Out-Null
     }
-    & "$VENV\Scripts\python.exe" -m pip install -q -r "$dir\requirements.txt" 2>$null
+    & uv pip install -q -r "$dir\requirements.txt" --python "$VENV\Scripts\python.exe" 2>$null
     Start-Process "$VENV\Scripts\pythonw.exe" -ArgumentList "`"$dir\ui.py`""
     exit
 }

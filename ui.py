@@ -1,5 +1,6 @@
 import sys, os, threading, time, json, requests, multiprocessing
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 try:
     from tkinterdnd2 import TkinterDnD, DND_FILES
     _DND_OK = True
@@ -65,7 +66,7 @@ def _load_files() -> list:
     if p.exists():
         try:
             paths = json.loads(p.read_text(encoding="utf-8"))
-            return [p for p in paths if os.path.exists(p)]
+            return [path for path in paths if os.path.exists(path)]
         except Exception:
             pass
     return []
@@ -79,11 +80,20 @@ def _save_files(paths: list) -> None:
 def _groups_path():
     return SESSION_FILE.parent / "kakao_groups.json"
 
+_LEGACY_GROUPS = (
+    Path(os.path.dirname(sys.executable))          # frozen exe: exe 옆 폴더
+    if getattr(sys, "frozen", False) else
+    Path(os.path.dirname(os.path.abspath(__file__)))  # 개발 환경: 소스 폴더
+) / "kakao_groups.json"
+
 def _load_groups() -> dict:
-    p = _groups_path()
-    if p.exists():
+    for p in (_groups_path(), _LEGACY_GROUPS):
+        if not p.exists():
+            continue
         try:
-            return json.loads(p.read_text(encoding="utf-8"))
+            d = json.loads(p.read_text(encoding="utf-8"))
+            if d:                          # 비어있으면 다음 경로 시도
+                return d
         except Exception:
             pass
     return {}
@@ -797,9 +807,10 @@ class App(TkinterDnD.Tk if _DND_OK else tk.Tk):
                          args=(targets, msg, file_paths), daemon=True).start()
 
     def _send_thread(self, targets, msg, file_paths=None):
-        ok_list  = []
-        fail_map = {}   # name → reason
-        total    = len(targets)
+        ok_list   = []
+        warn_list = []   # 전송은 됐지만 완료버튼 미처리
+        fail_map  = {}   # name → reason
+        total     = len(targets)
 
         with ThreadPoolExecutor(max_workers=2) as pool:
             futures = {pool.submit(send_message, t["name"], msg, file_paths): t["name"]
@@ -810,11 +821,13 @@ class App(TkinterDnD.Tk if _DND_OK else tk.Tk):
                     ok, reason = future.result()
                 except Exception as e:
                     ok, reason = False, str(e)
-                if ok:
+                if ok and reason == "완료버튼 미처리":
+                    warn_list.append(name)
+                elif ok:
                     ok_list.append(name)
                 else:
                     fail_map[name] = reason
-                done = len(ok_list) + len(fail_map)
+                done = len(ok_list) + len(warn_list) + len(fail_map)
                 self.after(0, lambda d=done, n=total:
                            self._status.config(
                                text=f"전송 중... {d}/{n}명", fg=GRAY))
@@ -823,23 +836,22 @@ class App(TkinterDnD.Tk if _DND_OK else tk.Tk):
             parts = []
             if ok_list:
                 parts.append(f"✓ {len(ok_list)}명 완료")
+            if warn_list:
+                parts.append(f"⚠ {len(warn_list)}명 전송완료(상담완료 미처리)")
             if fail_map:
                 detail = "\n".join(f"  {n}: {r}" for n, r in fail_map.items())
                 parts.append(f"✗ {len(fail_map)}명 실패")
-                self._status.config(text="  ".join(parts), fg=RED)
 
-                # 추가인증 만료 여부 확인
-                needs_auth = any(r == "추가인증 만료" for r in fail_map.values())
-                if needs_auth:
+            if fail_map:
+                self._status.config(text="  ".join(parts), fg=RED)
+                session_expired = any(r == "세션 만료" for r in fail_map.values())
+                if session_expired:
                     messagebox.showwarning(
-                        "관리자 추가인증 필요",
-                        "카카오비즈니스 관리자 추가인증이 만료되었습니다.\n\n"
+                        "세션 만료 — 재로그인 필요",
+                        "카카오 세션이 만료되었습니다.\n\n"
                         "해결 방법:\n"
-                        "1. Chrome에서 business.kakao.com 접속\n"
-                        "2. 채팅 목록 페이지에서\n"
-                        "   '관리자 추가인증' 버튼 클릭\n"
-                        "3. 휴대전화 인증 완료\n"
-                        "4. 이 앱에서 '카카오 로그인' 버튼 클릭\n\n"
+                        "1. '카카오 로그인' 버튼 클릭\n"
+                        "2. 로그인 후 '관리자 추가인증' 버튼도 클릭하여 인증 완료\n\n"
                         "인증 완료 후 다시 전송해 주세요.",
                     )
                     self.after(0, self._show_login_btn)
@@ -850,6 +862,16 @@ class App(TkinterDnD.Tk if _DND_OK else tk.Tk):
                         f"다음 학생 전송 실패:\n{detail}\n\n"
                         f"로그 파일: {log_path}",
                     )
+            elif warn_list:
+                self._status.config(text="  ".join(parts), fg="#E67E22")
+                log_path = SESSION_FILE.parent / "send_error.log"
+                messagebox.showwarning(
+                    "상담완료 미처리",
+                    f"메시지는 전송됐지만 다음 학생의 상담완료 버튼이 눌리지 않았습니다:\n"
+                    f"{chr(10).join(warn_list)}\n\n"
+                    "카카오 비즈니스에서 직접 상담완료 처리해 주세요.\n"
+                    f"상세 로그: {log_path}",
+                )
             else:
                 self._status.config(text="  ".join(parts), fg=GREEN)
         self.after(0, _done)

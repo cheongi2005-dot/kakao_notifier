@@ -14,10 +14,8 @@ kakao_groups.json
 .browser_session/
 kakao_selenium_profile/
 
-# 자격증명 / 사용자 데이터 JSON
+# 자격증명
 firebase-key.json
-kakao_groups.json
-.kakao_session.json
 
 # Python 캐시
 __pycache__/
