@@ -748,7 +748,7 @@ class App(TkinterDnD.Tk if _DND_OK else tk.Tk):
                 return
             self._sched_jobs.pop(job_id, None)
             self.after(0, self._refresh_sched_list)
-            self._start_send(targets, msg, file_paths)
+            self.after(0, lambda: self._start_send(targets, msg, file_paths))
 
         threading.Thread(target=_wait, daemon=True).start()
 
@@ -777,13 +777,13 @@ class App(TkinterDnD.Tk if _DND_OK else tk.Tk):
             card.pack(fill="x", pady=(0, 6))
             tk.Label(card, text=job["label"], font=FS, bg=CHIP, fg=DARK,
                      wraplength=170, justify="left",
-                     padx=8, pady=(6, 2)).pack(anchor="w")
+                     padx=8).pack(anchor="w", pady=(6, 2))
             msg_txt = job.get("msg", "")
             if msg_txt:
                 preview = msg_txt[:40] + ("…" if len(msg_txt) > 40 else "")
                 tk.Label(card, text=f"💬 {preview}", font=FS, bg=CHIP, fg=GRAY,
                          wraplength=170, justify="left",
-                         padx=8, pady=(0, 2)).pack(anchor="w")
+                         padx=8).pack(anchor="w", pady=(0, 2))
             fps = job.get("file_paths")
             if fps:
                 n = len(fps)
@@ -793,7 +793,7 @@ class App(TkinterDnD.Tk if _DND_OK else tk.Tk):
                     fdisplay = fdisplay[:19] + "..."
                 tk.Label(card, text=f"📎 {fdisplay}", font=FS, bg=CHIP, fg=GRAY,
                          wraplength=170, justify="left",
-                         padx=8, pady=(0, 4)).pack(anchor="w")
+                         padx=8).pack(anchor="w", pady=(0, 4))
             tk.Button(card, text="취소", font=FS, bg=CHIP, fg=RED,
                       relief="flat", bd=0, cursor="hand2", padx=8, pady=3,
                       command=lambda jid=job_id: self._cancel_sched(jid)
