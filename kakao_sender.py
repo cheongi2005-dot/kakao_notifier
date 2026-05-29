@@ -1,19 +1,14 @@
 """카카오 비즈니스 채팅 자동화.
 
 로그인 방식:
-  Stage 1. Chrome 쿠키 DB 직접 읽기 (Chrome 실행 중이어도 동작)
-  Stage 2. Playwright Chromium headed 로그인 (Chrome 설치 불필요)
+  Playwright Chromium headed 로그인 (Chrome 설치 불필요, persistent context로 재사용)
 메시지 전송: requests 직접 API 호출 (브라우저 불필요)
 """
-import base64
 import json
 import mimetypes
 import os
-import shutil
-import sqlite3
 import struct
 import sys
-import tempfile
 import time
 import requests
 from pathlib import Path
@@ -46,109 +41,7 @@ _HEADERS = {
 }
 
 
-# ── Stage 1: Chrome 쿠키 직접 읽기 ───────────────────────────────────────────
-
-def _read_chrome_cookies() -> dict | None:
-    """Chrome 쿠키 DB에서 kakao.com 쿠키를 직접 읽어 반환 (Chrome 실행 중도 가능)."""
-    try:
-        import win32crypt
-        from Cryptodome.Cipher import AES
-    except ImportError:
-        try:
-            import win32crypt
-            from Crypto.Cipher import AES
-        except ImportError:
-            return None
-
-    local_data       = Path(os.environ.get("LOCALAPPDATA", ""))
-    local_state_path = local_data / "Google/Chrome/User Data/Local State"
-    cookie_path      = local_data / "Google/Chrome/User Data/Default/Network/Cookies"
-
-    if not local_state_path.exists() or not cookie_path.exists():
-        return None
-
-    try:
-        ls      = json.loads(local_state_path.read_text(encoding="utf-8"))
-        enc_key = base64.b64decode(ls["os_crypt"]["encrypted_key"])[5:]
-        key     = win32crypt.CryptUnprotectData(enc_key, None, None, None, 0)[1]
-    except Exception:
-        return None
-
-    def _open_db():
-        uri = "file:///" + str(cookie_path).replace("\\", "/") + "?mode=ro&nolock=1&immutable=1"
-        return sqlite3.connect(uri, uri=True, check_same_thread=False)
-
-    tmp = None
-    try:
-        con  = _open_db()
-        rows = con.execute(
-            "SELECT name, encrypted_value FROM cookies WHERE host_key LIKE '%.kakao.com'"
-        ).fetchall()
-        con.close()
-    except Exception:
-        fd, tmp_str = tempfile.mkstemp(suffix=".db")
-        os.close(fd)
-        tmp = Path(tmp_str)
-        try:
-            shutil.copy2(cookie_path, tmp)
-            con  = sqlite3.connect(str(tmp))
-            rows = con.execute(
-                "SELECT name, encrypted_value FROM cookies WHERE host_key LIKE '%.kakao.com'"
-            ).fetchall()
-            con.close()
-        except Exception:
-            tmp.unlink(missing_ok=True)
-            return None
-
-    cookies = {}
-    try:
-        for name, enc_val in rows:
-            if not enc_val:
-                continue
-            try:
-                if enc_val[:3] == b"v10":
-                    nonce, ct, tag = enc_val[3:15], enc_val[15:-16], enc_val[-16:]
-                    val = AES.new(key, AES.MODE_GCM, nonce=nonce).decrypt_and_verify(ct, tag).decode()
-                else:
-                    val = win32crypt.CryptUnprotectData(enc_val, None, None, None, 0)[1].decode()
-                cookies[name] = val
-            except Exception:
-                pass
-    finally:
-        if tmp:
-            tmp.unlink(missing_ok=True)
-
-    return cookies if cookies else None
-
-
-def _try_chrome_direct() -> dict | None:
-    """Chrome 쿠키로 API 검증 → 성공 시 session dict 반환."""
-    cookies = _read_chrome_cookies()
-    if not cookies:
-        return None
-
-    try:
-        r = requests.get(
-            f"https://business.kakao.com/api/profiles/{PROFILE_ID}/managers",
-            cookies=cookies,
-            headers={
-                "Accept":       "application/json, text/plain, */*",
-                "Origin":       "https://business.kakao.com",
-                "Referer":      CHAT_BASE,
-                "sec-fetch-site": "same-origin",
-                "sec-fetch-mode": "cors",
-                "User-Agent":   _HEADERS["User-Agent"],
-            },
-            timeout=15,
-        )
-        if r.status_code == 200:
-            return {"token": "", "cookies": cookies}
-    except Exception:
-        pass
-    return None
-
-
-# ── Stage 2: Playwright Chromium headed 로그인 ───────────────────────────────
+# ── Playwright Chromium headed 로그인 ────────────────────────────────────────
 
 _PW_PROFILE = Path("C:/Users/Public/kakao_notifier_browser")
 
@@ -317,15 +210,7 @@ def _validate_session(session: dict) -> bool:
 
 
 def do_login(force_browser: bool = False) -> bool:
-    """Stage 1(Chrome 쿠키 직접 읽기) → Stage 2(Playwright 브라우저 로그인) 순서로 시도.
-    force_browser=True이면 Stage 1을 건너뛰고 바로 브라우저를 연다.
-    """
-    if not force_browser:
-        session = _try_chrome_direct()
-        if session:
-            _save_session(session)
-            return True
-
+    """Playwright 브라우저로 로그인. force_browser 인수는 하위 호환성 유지용."""
     session = _try_playwright_login()
     if session:
         cookies = session.get("cookies", {})
