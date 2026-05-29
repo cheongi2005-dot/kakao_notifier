@@ -245,7 +245,7 @@ class App(TkinterDnD.Tk if _DND_OK else tk.Tk):
         left  = tk.Frame(body, bg=BG)
         left.pack(side="left", fill="both", expand=True, padx=(0, 16))
 
-        right = tk.Frame(body, bg=BG, width=260)
+        right = tk.Frame(body, bg=BG, width=300)
         right.pack(side="left", fill="y")
         right.pack_propagate(False)
 
@@ -776,13 +776,13 @@ class App(TkinterDnD.Tk if _DND_OK else tk.Tk):
                             highlightthickness=1, highlightbackground=CHIP_B)
             card.pack(fill="x", pady=(0, 6))
             tk.Label(card, text=job["label"], font=FS, bg=CHIP, fg=DARK,
-                     wraplength=230, justify="left",
+                     wraplength=268, justify="left",
                      padx=8).pack(anchor="w", pady=(6, 2))
             msg_txt = job.get("msg", "")
             if msg_txt:
                 preview = msg_txt[:40] + ("…" if len(msg_txt) > 40 else "")
                 tk.Label(card, text=f"💬 {preview}", font=FS, bg=CHIP, fg=GRAY,
-                         wraplength=230, justify="left",
+                         wraplength=268, justify="left",
                          padx=8).pack(anchor="w", pady=(0, 2))
             fps = job.get("file_paths")
             if fps:
@@ -792,7 +792,7 @@ class App(TkinterDnD.Tk if _DND_OK else tk.Tk):
                 if len(fdisplay) > 22:
                     fdisplay = fdisplay[:19] + "..."
                 tk.Label(card, text=f"📎 {fdisplay}", font=FS, bg=CHIP, fg=GRAY,
-                         wraplength=230, justify="left",
+                         wraplength=268, justify="left",
                          padx=8).pack(anchor="w", pady=(0, 4))
             tk.Button(card, text="취소", font=FS, bg=CHIP, fg=RED,
                       relief="flat", bd=0, cursor="hand2", padx=8, pady=3,
@@ -1116,7 +1116,7 @@ class App(TkinterDnD.Tk if _DND_OK else tk.Tk):
         self.geometry(f"{w}x{h}+{x}+{y}")
 
     def _center(self):
-        w, h = 800, 900
+        w, h = 900, 900
         sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
         x = (sw - w) // 2
         y = (sh - h) // 2
