@@ -534,39 +534,116 @@ def _pw_complete(web_url: str, session: dict) -> bool:
                     _write_log(f"_pw_complete: 인증 페이지로 리다이렉션 → {cur}")
                     return False
 
-                page.wait_for_timeout(1500)
-
-                # btn_state 클릭 (timeout=8s: 버튼 미출현 시 PWTimeout)
-                try:
-                    page.locator("button.btn_state").first.click(timeout=8_000)
-                except PWTimeout:
-                    _write_log(f"_pw_complete: btn_state 버튼 없음 (이미 완료 상태?) → {web_url}")
-                    return False
-
-                # 확인 다이얼로그 버튼 클릭 (클래스 선택자 → role/텍스트 폴백 순서)
-                confirmed = False
-
-                # 1순위: 기존 클래스 선택자
-                for sel in ("button.btn_g_m", "button.btn_g.btn_g2"):
+                # SPA 로딩 대기: btn_state 버튼이 나타날 때까지 최대 20초
+                # (고정 1.5s wait 대신 셀렉터 대기로 교체 — React 렌더링 완료 보장)
+                _BTN_STATE_SELS = (
+                    "button.btn_state",
+                    "button[class*='btn_state']",
+                )
+                btn_state_loc = None
+                for _sel in _BTN_STATE_SELS:
                     try:
-                        page.locator(sel).first.click(timeout=4_000)
-                        confirmed = True
+                        page.wait_for_selector(_sel, timeout=20_000)
+                        btn_state_loc = page.locator(_sel).first
                         break
                     except PWTimeout:
+                        continue
+
+                if btn_state_loc is None:
+                    all_btns = page.locator("button").all_text_contents()
+                    _write_log(
+                        f"_pw_complete: btn_state 버튼 없음 → {web_url}\n"
+                        f"  page.url={page.url}\n"
+                        f"  buttons={all_btns[:10]}"
+                    )
+                    return False
+
+                try:
+                    btn_state_loc.click(timeout=5_000)
+                except PWTimeout:
+                    _write_log(f"_pw_complete: btn_state 클릭 실패 → {web_url}")
+                    return False
+
+                # 상담완료 상태 확인 함수 — btn_state 버튼 텍스트로 판단
+                # (.popup_head 확인은 다이얼로그가 열린 상태를 완료로 오인할 수 있으므로 제거)
+                def _is_completed() -> bool:
+                    try:
+                        result = page.evaluate("""() => {
+                            const btn = document.querySelector(
+                                'button.btn_state, button[class*="btn_state"]');
+                            if (btn && btn.innerText.trim().includes('상담완료')) return true;
+                            const all = document.body.innerText;
+                            const m = all.match(/상담상태[\\s\\S]{0,30}상담완료/);
+                            return !!m;
+                        }""")
+                        return bool(result)
+                    except Exception:
+                        return False
+
+                confirmed = False
+                time.sleep(0.6)
+
+                # 1단계: "상담 완료하기" 버튼 — force=True로 오버레이 우회 클릭
+                try:
+                    page.wait_for_selector(
+                        "button.btn_g_m:not(.disabled)", timeout=5_000)
+                    page.locator("button.btn_g_m:not(.disabled)").first.click(
+                        force=True, timeout=5_000)
+                except (PWTimeout, Exception):
+                    # disabled 포함 폴백
+                    try:
+                        page.locator("button.btn_g_m").first.click(
+                            force=True, timeout=3_000)
+                    except (PWTimeout, Exception):
                         pass
 
-                # 2순위: ARIA role + 텍스트 폴백 (카카오 UI 클래스 변경에 대응)
-                if not confirmed:
-                    for label in ("확인", "완료", "상담완료"):
-                        try:
-                            page.get_by_role("button", name=label).last.click(timeout=3_000)
+                time.sleep(0.8)
+
+                # 2단계: 확인 팝업의 "확인" 버튼 — force=True 클릭
+                for label in ("확인", "완료"):
+                    try:
+                        loc = page.get_by_role("button", name=label)
+                        if loc.count() > 0:
+                            loc.last.click(force=True, timeout=3_000)
                             confirmed = True
                             break
-                        except PWTimeout:
+                    except (PWTimeout, Exception):
+                        pass
+
+                # 3단계: 상태 확인
+                time.sleep(1.5)
+                if _is_completed():
+                    confirmed = True
+
+                # 4단계: 실패 시 btn_state 재클릭 후 1·2단계 반복
+                if not confirmed:
+                    try:
+                        page.locator("button.btn_state").first.click(
+                            force=True, timeout=3_000)
+                        time.sleep(0.8)
+                        try:
+                            page.wait_for_selector(
+                                "button.btn_g_m:not(.disabled)", timeout=4_000)
+                            page.locator("button.btn_g_m:not(.disabled)").first.click(
+                                force=True, timeout=3_000)
+                        except (PWTimeout, Exception):
                             pass
+                        time.sleep(0.8)
+                        for label in ("확인", "완료"):
+                            try:
+                                loc = page.get_by_role("button", name=label)
+                                if loc.count() > 0:
+                                    loc.last.click(force=True, timeout=3_000)
+                                    break
+                            except (PWTimeout, Exception):
+                                pass
+                        time.sleep(1.5)
+                        confirmed = _is_completed()
+                    except Exception:
+                        pass
 
                 if not confirmed:
-                    _write_log(f"_pw_complete: 확인 다이얼로그 버튼 없음 → {web_url}")
+                    _write_log(f"_pw_complete: 상담완료 처리 실패 → {web_url}")
                 return confirmed
 
             except Exception as e:
