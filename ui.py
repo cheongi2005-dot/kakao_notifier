@@ -26,7 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from kakao_sender import (send_message, do_login,
                           SESSION_FILE, _LEGACY_SESSION,
                           SEARCH_URL, PROFILE_ID, _HEADERS,
-                          _write_login_error)
+                          _write_login_error, clear_browser_profile)
 
 BG     = "#FAFAFA"
 WHITE  = "#FFFFFF"
@@ -845,15 +845,19 @@ class App(TkinterDnD.Tk if _DND_OK else tk.Tk):
             if fail_map:
                 self._status.config(text="  ".join(parts), fg=RED)
                 session_expired = any(r == "세션 만료" for r in fail_map.values())
-                if session_expired:
+                auth_error = any("403" in r for r in fail_map.values())
+                if session_expired or auth_error:
+                    # 세션 파일 삭제 → 초기 로그인 필요 상태로 리셋
+                    try:
+                        SESSION_FILE.unlink(missing_ok=True)
+                    except Exception:
+                        pass
                     messagebox.showwarning(
-                        "세션 만료 — 재로그인 필요",
-                        "카카오 세션이 만료되었습니다.\n\n"
-                        "해결 방법:\n"
-                        "1. '카카오 로그인' 버튼 클릭\n"
-                        "2. 로그인 후 '관리자 추가인증' 버튼도 클릭하여 인증 완료\n\n"
-                        "인증 완료 후 다시 전송해 주세요.",
+                        "재로그인 필요",
+                        "카카오 인증에 실패했습니다.\n\n"
+                        "아래 '카카오 로그인' 버튼을 눌러 다시 로그인해 주세요.",
                     )
+                    self.after(0, lambda: self._hint.config(text="로그인이 필요합니다", fg=RED))
                     self.after(0, self._show_login_btn)
                 else:
                     log_path = SESSION_FILE.parent / "send_error.log"
@@ -1087,6 +1091,7 @@ class App(TkinterDnD.Tk if _DND_OK else tk.Tk):
         self._hint.config(
             text="로그인 후 '관리자 추가인증' 버튼도 클릭하여 인증을 완료해 주세요", fg=GRAY
         )
+        clear_browser_profile()  # 캐시된 쿠키 제거 → 로그인 화면부터 시작
         threading.Thread(target=self._login_thread, daemon=True).start()
 
     def _login_thread(self):

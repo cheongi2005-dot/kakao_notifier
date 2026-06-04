@@ -209,6 +209,13 @@ def _validate_session(session: dict) -> bool:
         return False
 
 
+def clear_browser_profile() -> None:
+    """브라우저 프로필 초기화 — 재로그인 시 로그인 화면부터 시작."""
+    import shutil
+    if _PW_PROFILE.exists():
+        shutil.rmtree(_PW_PROFILE, ignore_errors=True)
+
+
 def do_login(force_browser: bool = False) -> bool:
     """Playwright 브라우저로 로그인. force_browser 인수는 하위 호환성 유지용."""
     session = _try_playwright_login()
