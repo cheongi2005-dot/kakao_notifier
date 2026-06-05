@@ -47,6 +47,13 @@ FH     = ("맑은 고딕", 13, "bold")
 FS     = ("맑은 고딕", 9)
 FSB    = ("맑은 고딕", 9, "bold")
 
+_PALETTE = [
+    "#E74C3C", "#E67E22", "#F1C40F", "#27AE60",
+    "#1ABC9C", "#3498DB", "#8E44AD", "#E91E63",
+    "#795548", "#607D8B",
+]
+_PALETTE_NAMES = ["빨강", "주황", "노랑", "초록", "청록", "파랑", "보라", "분홍", "갈색", "회청"]
+
 
 def _load_session():
     for path in (SESSION_FILE, _LEGACY_SESSION):
@@ -92,8 +99,9 @@ def _load_groups() -> dict:
             continue
         try:
             d = json.loads(p.read_text(encoding="utf-8"))
-            if d:                          # 비어있으면 다음 경로 시도
-                return d
+            grps = {k: v for k, v in d.items() if k != "__meta__"}
+            if grps:
+                return grps
         except Exception:
             pass
     return {}
@@ -101,7 +109,36 @@ def _load_groups() -> dict:
 def _save_groups(groups: dict) -> None:
     p = _groups_path()
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(groups, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        existing = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+        meta = existing.get("__meta__")
+    except Exception:
+        meta = None
+    data = dict(groups)
+    if meta is not None:
+        data["__meta__"] = meta
+    p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+def _load_meta() -> dict:
+    for p in (_groups_path(), _LEGACY_GROUPS):
+        if not p.exists():
+            continue
+        try:
+            d = json.loads(p.read_text(encoding="utf-8"))
+            return d.get("__meta__", {"labels": [], "groups_meta": {}})
+        except Exception:
+            pass
+    return {"labels": [], "groups_meta": {}}
+
+def _save_meta(meta: dict) -> None:
+    p = _groups_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        d = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+    except Exception:
+        d = {}
+    d["__meta__"] = meta
+    p.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
 
 def _get_headers(session):
     hdrs = dict(_HEADERS)
@@ -400,13 +437,24 @@ class App(TkinterDnD.Tk if _DND_OK else tk.Tk):
                                   bg=WHITE, fg=DARK,
                                   highlightthickness=1, highlightbackground=BORDER)
         # ══ [왼쪽] 전송 버튼 ══════════════════════════════════════
-        self._send_btn = tk.Button(left, text="전송", font=FB,
+        btn_row = tk.Frame(left, bg=BG)
+        btn_row.pack(fill="x", pady=(2, 8))
+
+        self._send_btn = tk.Button(btn_row, text="전송", font=FB,
                                    bg=YELLOW, fg=DARK, relief="flat", bd=0,
                                    height=2, cursor="hand2",
                                    command=self._on_send)
-        self._send_btn.pack(fill="x", pady=(2, 8))
+        self._send_btn.pack(side="left", fill="x", expand=True)
         self._send_btn.bind("<Enter>", lambda e: self._send_btn.config(bg=Y_HOV))
         self._send_btn.bind("<Leave>", lambda e: self._send_btn.config(bg=YELLOW))
+
+        self._abort_btn = tk.Button(btn_row, text="강제\n종료", font=FSB,
+                                    bg="#6d0000", fg=WHITE, relief="flat", bd=0,
+                                    width=6, cursor="hand2",
+                                    command=self._on_abort)
+        self._abort_btn.pack(side="left", padx=(6, 0), fill="y")
+        self._abort_btn.bind("<Enter>", lambda e: self._abort_btn.config(bg="#4a0000"))
+        self._abort_btn.bind("<Leave>", lambda e: self._abort_btn.config(bg="#6d0000"))
 
         self._status = tk.Label(left, text="", font=FS, bg=BG, fg=GRAY)
         self._status.pack(anchor="w")
@@ -900,14 +948,242 @@ class App(TkinterDnD.Tk if _DND_OK else tk.Tk):
         win.title("그룹 관리")
         win.configure(bg=BG)
         win.resizable(True, True)
-        win.minsize(400, 300)
-        # non-modal: no grab_set()
+        win.minsize(500, 533)
 
         outer = tk.Frame(win, bg=BG, padx=16, pady=12)
         outer.pack(fill="both", expand=True)
         tk.Label(outer, text="그룹 관리", font=FH, bg=BG, fg=DARK
-                 ).pack(anchor="w", pady=(0, 10))
+                 ).pack(anchor="w", pady=(0, 8))
 
+        # ── 학생 검색창 ──
+        search_row = tk.Frame(outer, bg=BG)
+        search_row.pack(fill="x", pady=(0, 2))
+        tk.Label(search_row, text="학생 검색:", font=FS, bg=BG, fg=DARK).pack(side="left")
+        search_var = tk.StringVar()
+        search_entry = tk.Entry(search_row, textvariable=search_var, font=FS, width=16,
+                                relief="solid", bd=1)
+        search_entry.pack(side="left", padx=(6, 4))
+        tk.Button(search_row, text="검색", font=FS, bg=LGRAY, fg=DARK,
+                  relief="flat", bd=0, cursor="hand2", padx=8, pady=2,
+                  command=lambda: _do_search()).pack(side="left")
+
+        # 검색 결과 칩 영역
+        result_frame = tk.Frame(outer, bg=BG)
+        result_frame.pack(fill="x", pady=(4, 6))
+
+        def _do_search(*_):
+            for w in result_frame.winfo_children():
+                w.destroy()
+            keyword = search_var.get().strip()
+            if not keyword:
+                return
+            grps = _load_groups()
+            gm_all = _load_meta().get("groups_meta", {})
+            matched = [(g, mems) for g, mems in grps.items()
+                       if any(keyword in m["name"] for m in mems)]
+            if not matched:
+                tk.Label(result_frame,
+                         text=f"'{keyword}'이(가) 포함된 그룹이 없습니다.",
+                         font=FS, bg=BG, fg=GRAY).pack(anchor="w")
+                return
+            tk.Label(result_frame, text=f"'{keyword}' 포함 그룹:",
+                     font=FS, bg=BG, fg=GRAY).pack(anchor="w", pady=(0, 3))
+            chips_row = tk.Frame(result_frame, bg=BG)
+            chips_row.pack(fill="x")
+            for gname, mems in matched:
+                gm = gm_all.get(gname, {})
+                color = gm.get("color", CHIP_B)
+                chip = tk.Frame(chips_row, bg=CHIP,
+                                highlightthickness=1, highlightbackground=color)
+                chip.pack(side="left", padx=(0, 6), pady=2)
+                tk.Frame(chip, bg=color, width=4).pack(side="left", fill="y")
+                cnt = sum(1 for m in mems if keyword in m["name"])
+                tk.Label(chip, text=f"  {gname}  ({cnt}/{len(mems)}명)",
+                         font=FS, bg=CHIP, fg=DARK, padx=4, pady=3).pack(side="left")
+
+        search_entry.bind("<Return>", _do_search)
+        search_var.trace_add("write", _do_search)
+
+        # ── 드래그 공유 상태 ──
+        card_registry = []          # [(gname, card_frame)] — _refresh마다 재구성
+        lchip_list   = []           # [(lname, chip_frame)] — _refresh_lbar마다 재구성
+        group_drag = {"src": None, "ind": [None]}
+        label_drag = {"src": None, "ind": [None]}
+
+        # ── 그룹 드래그 헬퍼 ──
+        def _grp_find_insert(y_screen):
+            for gn, card in card_registry:
+                if not card.winfo_ismapped():
+                    continue
+                if y_screen < card.winfo_rooty() + card.winfo_height() // 2:
+                    return gn
+            return None  # 맨 끝
+
+        def _grp_show_ind(before_g):
+            ind = group_drag["ind"][0]
+            if ind is None or not ind.winfo_exists():
+                return
+            if ind.winfo_ismapped():
+                ind.pack_forget()
+            src = group_drag["src"]
+            if before_g and before_g != src:
+                for gn, card in card_registry:
+                    if gn == before_g:
+                        ind.pack(fill="x", padx=4, pady=0, before=card)
+                        return
+            elif before_g is None and card_registry:
+                last_g, last_card = card_registry[-1]
+                if last_g != src:
+                    ind.pack(fill="x", padx=4, pady=0, after=last_card)
+
+        def _grp_drop(y_screen, src):
+            before_g = _grp_find_insert(y_screen)
+            ind = group_drag["ind"][0]
+            if ind and ind.winfo_ismapped():
+                ind.pack_forget()
+            if before_g == src:
+                return
+            meta = _load_meta()
+            all_g = list(_load_groups().keys())
+            order = meta.get("group_order", list(all_g))
+            for g in all_g:
+                if g not in order:
+                    order.append(g)
+            order = [g for g in order if g in all_g]
+            if src not in order:
+                return
+            order.remove(src)
+            if before_g and before_g in order:
+                order.insert(order.index(before_g), src)
+            else:
+                order.append(src)
+            meta["group_order"] = order
+            _save_meta(meta)
+            _refresh()
+
+        # ── 레이블 드래그 헬퍼 ──
+        def _lbl_find_insert(x_screen):
+            for ln, chip in lchip_list:
+                if x_screen < chip.winfo_rootx() + chip.winfo_width() // 2:
+                    return ln
+            return None
+
+        def _lbl_show_ind(before_l):
+            ind = label_drag["ind"][0]
+            if ind is None or not ind.winfo_exists():
+                return
+            if ind.winfo_ismapped():
+                ind.pack_forget()
+            src = label_drag["src"]
+            if before_l and before_l != src:
+                for ln, chip in lchip_list:
+                    if ln == before_l:
+                        ind.pack(side="left", fill="y", pady=2, padx=0, before=chip)
+                        return
+            elif before_l is None and lchip_list:
+                last_l, last_chip = lchip_list[-1]
+                if last_l != src:
+                    ind.pack(side="left", fill="y", pady=2, padx=0, after=last_chip)
+
+        def _lbl_drop(x_screen, src):
+            before_l = _lbl_find_insert(x_screen)
+            ind = label_drag["ind"][0]
+            if ind and ind.winfo_ismapped():
+                ind.pack_forget()
+            meta = _load_meta()
+            labels = list(meta.get("labels", []))
+            if src not in labels:
+                return
+            labels.remove(src)
+            if before_l and before_l in labels:
+                labels.insert(labels.index(before_l), src)
+            else:
+                labels.append(src)
+            meta["labels"] = labels
+            _save_meta(meta)
+            _refresh_lbar()
+            _refresh()
+
+        # ── 레이블 관리 행 ──
+        lbar_outer = tk.Frame(outer, bg=BG)
+        lbar_outer.pack(fill="x", pady=(0, 8))
+
+        def _refresh_lbar():
+            for w in lbar_outer.winfo_children():
+                w.destroy()
+            lchip_list.clear()
+            label_drag["ind"][0] = tk.Frame(lbar_outer, bg="#3498DB", width=2)
+
+            meta = _load_meta()
+            tk.Label(lbar_outer, text="레이블:", font=FS, bg=BG, fg=DARK
+                     ).pack(side="left", padx=(0, 4))
+            for lname in meta.get("labels", []):
+                chip = tk.Frame(lbar_outer, bg=LGRAY,
+                                highlightthickness=1, highlightbackground=BORDER)
+                chip.pack(side="left", padx=(0, 4))
+                lchip_list.append((lname, chip))
+
+                ps = {"x": 0, "drag": False}
+                name_lbl = tk.Label(chip, text=lname, font=FSB, bg=LGRAY, fg=DARK,
+                                    padx=6, pady=2, cursor="hand2")
+                name_lbl.pack(side="left")
+
+                def _lp(e, ln=lname):
+                    ps["x"] = e.x_root; ps["drag"] = False
+                    label_drag["src"] = ln
+                def _lm(e):
+                    if abs(e.x_root - ps["x"]) > 5:
+                        ps["drag"] = True
+                        _lbl_show_ind(_lbl_find_insert(e.x_root))
+                def _lr(e, ln=lname):
+                    src = label_drag["src"]; label_drag["src"] = None
+                    if ps["drag"] and src:
+                        _lbl_drop(e.x_root, src)
+                    ps["drag"] = False
+                name_lbl.bind("<ButtonPress-1>",   _lp)
+                name_lbl.bind("<B1-Motion>",        _lm)
+                name_lbl.bind("<ButtonRelease-1>",  _lr)
+
+                def _make_del_label(ln=lname):
+                    def _del_lbl():
+                        if not messagebox.askyesno(
+                                "레이블 삭제",
+                                f"'{ln}' 레이블을 삭제할까요?\n(그룹은 유지되며 레이블만 해제됩니다.)",
+                                parent=win):
+                            return
+                        m2 = _load_meta()
+                        m2["labels"] = [x for x in m2.get("labels", []) if x != ln]
+                        for gm in m2.get("groups_meta", {}).values():
+                            if gm.get("label") == ln:
+                                gm.pop("label", None)
+                        _save_meta(m2)
+                        _refresh_lbar()
+                        _refresh()
+                    return _del_lbl
+
+                tk.Button(chip, text="×", font=FS, bg=LGRAY, fg=GRAY,
+                          relief="flat", bd=0, cursor="hand2", padx=4, pady=2,
+                          command=_make_del_label()).pack(side="left")
+
+            def _add_label():
+                from tkinter.simpledialog import askstring
+                name = askstring("레이블 추가", "레이블 이름:", parent=win)
+                if not name or not name.strip():
+                    return
+                name = name.strip()
+                m2 = _load_meta()
+                if name not in m2.get("labels", []):
+                    m2.setdefault("labels", []).append(name)
+                    _save_meta(m2)
+                    _refresh_lbar()
+
+            tk.Button(lbar_outer, text="+ 레이블 추가", font=FS, bg=LGRAY, fg=DARK,
+                      relief="flat", bd=0, cursor="hand2", padx=8, pady=2,
+                      command=_add_label).pack(side="left")
+
+        _refresh_lbar()
+
+        # ── 스크롤 영역 ──
         scroll_area = tk.Frame(outer, bg=BG)
         scroll_area.pack(fill="both", expand=True)
 
@@ -928,9 +1204,238 @@ class App(TkinterDnD.Tk if _DND_OK else tk.Tk):
             canv.yview_scroll(-1 * (ev.delta // 120), "units")
         win.bind("<MouseWheel>", _on_wheel)
 
+        def _render_group(gname, members, gm):
+            color = gm.get("color", CHIP_B)
+
+            card = tk.Frame(content, bg=CHIP,
+                            highlightthickness=1, highlightbackground=color)
+            card.pack(fill="x", pady=(0, 8), padx=2)
+            card_registry.append((gname, card))
+
+            tk.Frame(card, bg=color, width=5).pack(side="left", fill="y")
+            inner = tk.Frame(card, bg=CHIP)
+            inner.pack(side="left", fill="both", expand=True)
+
+            # ── 헤더 ──
+            hdr = tk.Frame(inner, bg=CHIP)
+            hdr.pack(fill="x", padx=(8, 10), pady=(7, 5))
+
+            name_lbl = tk.Label(hdr, text=gname, font=FB, bg=CHIP, fg=DARK,
+                                cursor="hand2")
+            name_lbl.pack(side="left")
+            tk.Label(hdr, text=f"({len(members)}명)", font=FS,
+                     bg=CHIP, fg=GRAY).pack(side="left", padx=4)
+
+            def _make_del(g=gname):
+                def _del():
+                    if messagebox.askyesno("삭제 확인",
+                                           f"'{g}' 그룹을 삭제할까요?", parent=win):
+                        grps2 = _load_groups()
+                        grps2.pop(g, None)
+                        _save_groups(grps2)
+                        _refresh()
+                return _del
+
+            def _make_load_all(g=gname):
+                def _load_all():
+                    for m in _load_groups().get(g, []):
+                        self._add_selected(m)
+                return _load_all
+
+            def _open_edit(g=gname):
+                pop = tk.Toplevel(win)
+                pop.title(f"편집 — {g}")
+                pop.configure(bg=BG)
+                pop.resizable(False, False)
+                pop.grab_set()
+                fr = tk.Frame(pop, bg=BG, padx=14, pady=12)
+                fr.pack()
+
+                # 색상
+                tk.Label(fr, text="색상", font=FSB, bg=BG, fg=DARK
+                         ).pack(anchor="w", pady=(0, 6))
+                pal_fr = tk.Frame(fr, bg=BG)
+                pal_fr.pack()
+                for i, (clr, cname) in enumerate(zip(_PALETTE, _PALETTE_NAMES)):
+                    def _set_color(cl=clr):
+                        m2 = _load_meta()
+                        m2.setdefault("groups_meta", {}).setdefault(g, {})["color"] = cl
+                        _save_meta(m2)
+                        pop.destroy()
+                        _refresh()
+                    cell = tk.Frame(pal_fr, bg=clr, width=36, height=36,
+                                    cursor="hand2", relief="solid", bd=1)
+                    cell.grid(row=i // 5, column=i % 5, padx=3, pady=3)
+                    cell.bind("<Button-1>", lambda _, cl=clr: _set_color(cl))
+                    tk.Label(cell, text=cname, bg=clr, fg="white",
+                             font=("맑은 고딕", 7)).place(relx=0.5, rely=0.5,
+                                                           anchor="center")
+
+                def _reset_color():
+                    m2 = _load_meta()
+                    m2.setdefault("groups_meta", {}).get(g, {}).pop("color", None)
+                    _save_meta(m2)
+                    pop.destroy()
+                    _refresh()
+
+                tk.Button(fr, text="기본색 초기화", font=FS, bg=LGRAY, fg=GRAY,
+                          relief="flat", bd=0, cursor="hand2", pady=4,
+                          command=_reset_color).pack(fill="x", pady=(6, 14))
+
+                # 레이블
+                tk.Label(fr, text="레이블", font=FSB, bg=BG, fg=DARK
+                         ).pack(anchor="w", pady=(0, 4))
+                m2 = _load_meta()
+                lbls = m2.get("labels", [])
+                cur_lbl = m2.get("groups_meta", {}).get(g, {}).get("label", "")
+
+                if not lbls:
+                    tk.Label(fr, text="레이블 없음  (상단에서 추가)",
+                             font=FS, bg=BG, fg=GRAY).pack(anchor="w", pady=(0, 4))
+                else:
+                    for lbl in lbls:
+                        def _assign(ln=lbl):
+                            m3 = _load_meta()
+                            m3.setdefault("groups_meta", {}).setdefault(g, {})["label"] = ln
+                            _save_meta(m3)
+                            pop.destroy()
+                            _refresh()
+                        is_cur = (lbl == cur_lbl)
+                        tk.Button(fr,
+                                  text=("✓  " if is_cur else "    ") + lbl,
+                                  font=FS,
+                                  bg="#D6EAF8" if is_cur else LGRAY,
+                                  fg="#1A5276" if is_cur else DARK,
+                                  relief="flat", bd=0, cursor="hand2",
+                                  padx=10, pady=5, anchor="w",
+                                  command=_assign).pack(fill="x", pady=1)
+
+                if cur_lbl:
+                    def _clear_lbl():
+                        m3 = _load_meta()
+                        m3.setdefault("groups_meta", {}).get(g, {}).pop("label", None)
+                        _save_meta(m3)
+                        pop.destroy()
+                        _refresh()
+                    tk.Button(fr, text="레이블 해제", font=FS, bg=LGRAY, fg=RED,
+                              relief="flat", bd=0, cursor="hand2", pady=4,
+                              command=_clear_lbl).pack(fill="x", pady=(6, 0))
+
+                pop.update_idletasks()
+                px = win.winfo_x() + (win.winfo_width() - pop.winfo_reqwidth()) // 2
+                py = win.winfo_y() + (win.winfo_height() - pop.winfo_reqheight()) // 2
+                pop.geometry(f"+{px}+{py}")
+
+            tk.Button(hdr, text="그룹 삭제", font=FS,
+                      bg=LGRAY, fg=RED, relief="flat", bd=0,
+                      cursor="hand2", padx=8, pady=2,
+                      command=_make_del()).pack(side="right")
+            tk.Button(hdr, text="편집", font=FS,
+                      bg=LGRAY, fg=DARK, relief="flat", bd=0,
+                      cursor="hand2", padx=8, pady=2,
+                      command=lambda g=gname: _open_edit(g)).pack(side="right",
+                                                                   padx=(0, 4))
+            tk.Button(hdr, text="전체 선택에 추가", font=FS,
+                      bg=YELLOW, fg=DARK, relief="flat", bd=0,
+                      cursor="hand2", padx=8, pady=2,
+                      command=_make_load_all()).pack(side="right", padx=(0, 4))
+
+            # ── 본문 (이름 클릭=토글, 드래그=순서 변경) ──
+            body = tk.Frame(inner, bg=CHIP)
+
+            expanded = [False]
+            gps = {"y": 0, "drag": False}
+
+            def _gp(e):
+                gps["y"] = e.y_root; gps["drag"] = False
+                group_drag["src"] = gname
+            def _gm(e):
+                if abs(e.y_root - gps["y"]) > 6:
+                    gps["drag"] = True
+                    _grp_show_ind(_grp_find_insert(e.y_root))
+            def _gr(e, bf=body, ex=expanded):
+                src = group_drag["src"]; group_drag["src"] = None
+                if gps["drag"] and src:
+                    _grp_drop(e.y_root, src)
+                else:
+                    if ex[0]:
+                        bf.pack_forget()
+                    else:
+                        bf.pack(fill="x", pady=(0, 4))
+                    ex[0] = not ex[0]
+                gps["drag"] = False
+
+            name_lbl.bind("<ButtonPress-1>",   _gp)
+            name_lbl.bind("<B1-Motion>",        _gm)
+            name_lbl.bind("<ButtonRelease-1>",  _gr)
+
+            if members:
+                tk.Frame(body, bg=BORDER, height=1).pack(fill="x", padx=8, pady=(0, 4))
+                for m in members:
+                    mrow = tk.Frame(body, bg=CHIP)
+                    mrow.pack(fill="x", padx=8, pady=1)
+                    tk.Label(mrow, text="•  " + m["name"], font=F,
+                             bg=CHIP, fg=DARK).pack(side="left")
+
+                    def _make_rm(g=gname, mn=m["name"]):
+                        def _rm():
+                            grps2 = _load_groups()
+                            if g in grps2:
+                                grps2[g] = [x for x in grps2[g] if x["name"] != mn]
+                                _save_groups(grps2)
+                            _refresh()
+                        return _rm
+
+                    tk.Button(mrow, text="삭제", font=FS,
+                              bg=CHIP, fg=RED, relief="flat", bd=0,
+                              cursor="hand2", padx=6, pady=0,
+                              command=_make_rm()).pack(side="left", padx=(6, 0))
+            else:
+                tk.Label(body, text="(멤버 없음)", font=FS,
+                         bg=CHIP, fg=GRAY, padx=8).pack(anchor="w", pady=(0, 4))
+
+            btn_row = tk.Frame(body, bg=CHIP)
+            btn_row.pack(fill="x", padx=8, pady=(4, 8))
+
+            def _make_add_sel(g=gname):
+                def _add_sel():
+                    if not self._selected:
+                        messagebox.showwarning("선택 필요",
+                            "메인 창에서 학생을 먼저 선택하세요.", parent=win)
+                        return
+                    grps2 = _load_groups()
+                    existing = {x["name"] for x in grps2.get(g, [])}
+                    added = 0
+                    for s in self._selected:
+                        if s["name"] not in existing:
+                            grps2.setdefault(g, []).append(s)
+                            existing.add(s["name"])
+                            added += 1
+                    _save_groups(grps2)
+                    _refresh()
+                    if added:
+                        messagebox.showinfo("추가 완료",
+                            f"'{g}' 그룹에 {added}명 추가됐습니다.", parent=win)
+                    else:
+                        messagebox.showinfo("이미 포함",
+                            "선택된 학생이 이미 모두 그룹에 있습니다.", parent=win)
+                return _add_sel
+
+            tk.Button(btn_row, text="전체 선택에 추가", font=FS,
+                      bg=YELLOW, fg=DARK, relief="flat", bd=0,
+                      cursor="hand2", padx=10, pady=3,
+                      command=_make_load_all()).pack(side="left")
+            tk.Button(btn_row, text="현재 선택에서 추가", font=FS,
+                      bg=LGRAY, fg=DARK, relief="flat", bd=0,
+                      cursor="hand2", padx=8, pady=3,
+                      command=_make_add_sel()).pack(side="left", padx=(6, 0))
+
         def _refresh():
             for w in content.winfo_children():
                 w.destroy()
+            card_registry.clear()
+            group_drag["ind"][0] = tk.Frame(content, bg="#3498DB", height=2)
+
             grps = _load_groups()
             if not grps:
                 tk.Label(content, text="저장된 그룹이 없습니다.\n학생 선택 후 '그룹 생성'으로 만들어 보세요.",
@@ -938,127 +1443,50 @@ class App(TkinterDnD.Tk if _DND_OK else tk.Tk):
                          justify="left").pack(anchor="w", padx=4, pady=8)
                 return
 
-            for gname, members in grps.items():
-                card = tk.Frame(content, bg=CHIP,
-                                highlightthickness=1, highlightbackground=CHIP_B)
-                card.pack(fill="x", pady=(0, 10), padx=2)
+            meta = _load_meta()
+            group_order = meta.get("group_order", [])
+            labels = meta.get("labels", [])
+            groups_meta = meta.get("groups_meta", {})
 
-                # ── 헤더: 클릭으로 접고 펼침 ──
-                hdr = tk.Frame(card, bg=CHIP, cursor="hand2")
-                hdr.pack(fill="x", padx=10, pady=(8, 6))
+            def _order_key(gn):
+                try:
+                    return group_order.index(gn)
+                except ValueError:
+                    return len(group_order)
 
-                arrow_lbl = tk.Label(hdr, text="▶", font=FS, bg=CHIP, fg=GRAY)
-                arrow_lbl.pack(side="left", padx=(0, 4))
-                tk.Label(hdr, text=gname, font=FB, bg=CHIP, fg=DARK).pack(side="left")
-                tk.Label(hdr, text=f"({len(members)}명)", font=FS,
-                         bg=CHIP, fg=GRAY).pack(side="left", padx=4)
+            sorted_items = sorted(grps.items(), key=lambda x: _order_key(x[0]))
 
-                def _make_del(g=gname):
-                    def _del():
-                        if messagebox.askyesno("삭제 확인",
-                                               f"'{g}' 그룹을 삭제할까요?", parent=win):
-                            grps2 = _load_groups()
-                            grps2.pop(g, None)
-                            _save_groups(grps2)
-                            _refresh()
-                    return _del
-
-                tk.Button(hdr, text="그룹 삭제", font=FS,
-                          bg=LGRAY, fg=RED, relief="flat", bd=0,
-                          cursor="hand2", padx=8, pady=2,
-                          command=_make_del()).pack(side="right")
-
-                # ── 접힌 본문 (멤버 + 액션 버튼) ──
-                body_frame = tk.Frame(card, bg=CHIP)
-
-                if members:
-                    sep = tk.Frame(body_frame, bg=BORDER, height=1)
-                    sep.pack(fill="x", padx=10, pady=(0, 4))
-
-                    for m in members:
-                        mrow = tk.Frame(body_frame, bg=CHIP)
-                        mrow.pack(fill="x", padx=10, pady=1)
-                        tk.Label(mrow, text="•  " + m["name"], font=F,
-                                 bg=CHIP, fg=DARK).pack(side="left")
-
-                        def _make_rm(g=gname, mn=m["name"]):
-                            def _rm():
-                                grps2 = _load_groups()
-                                if g in grps2:
-                                    grps2[g] = [x for x in grps2[g]
-                                                if x["name"] != mn]
-                                    _save_groups(grps2)
-                                _refresh()
-                            return _rm
-
-                        tk.Button(mrow, text="삭제", font=FS,
-                                  bg=CHIP, fg=RED, relief="flat", bd=0,
-                                  cursor="hand2", padx=6, pady=0,
-                                  command=_make_rm()).pack(side="left", padx=(6, 0))
+            labeled: dict = {lbl: [] for lbl in labels}
+            unlabeled = []
+            for gname, members in sorted_items:
+                gm = groups_meta.get(gname, {})
+                lbl = gm.get("label")
+                if lbl and lbl in labeled:
+                    labeled[lbl].append((gname, members, gm))
                 else:
-                    tk.Label(body_frame, text="(멤버 없음)", font=FS,
-                             bg=CHIP, fg=GRAY, padx=10).pack(anchor="w", pady=(0, 4))
+                    unlabeled.append((gname, members, gm))
 
-                btn_row = tk.Frame(body_frame, bg=CHIP)
-                btn_row.pack(fill="x", padx=10, pady=(6, 8))
+            def _cat_header(text):
+                row = tk.Frame(content, bg=BG)
+                row.pack(fill="x", padx=2, pady=(8, 3))
+                tk.Label(row, text=text, font=FSB, bg=BG, fg=DARK).pack(side="left")
+                tk.Frame(row, bg=BORDER, height=1).pack(side="left", fill="x",
+                                                        expand=True, padx=(6, 0))
 
-                def _make_load_all(g=gname):
-                    def _load_all():
-                        for m in _load_groups().get(g, []):
-                            self._add_selected(m)
-                    return _load_all
+            has_any_label = any(labeled[l] for l in labels)
+            for lbl in labels:
+                grp_list = labeled[lbl]
+                if not grp_list:
+                    continue
+                _cat_header(f"📂 {lbl}")
+                for gname, members, gm in grp_list:
+                    _render_group(gname, members, gm)
 
-                def _make_add_sel(g=gname):
-                    def _add_sel():
-                        if not self._selected:
-                            messagebox.showwarning("선택 필요",
-                                "메인 창에서 학생을 먼저 선택하세요.", parent=win)
-                            return
-                        grps2 = _load_groups()
-                        existing = {x["name"] for x in grps2.get(g, [])}
-                        added = 0
-                        for s in self._selected:
-                            if s["name"] not in existing:
-                                grps2.setdefault(g, []).append(s)
-                                existing.add(s["name"])
-                                added += 1
-                        _save_groups(grps2)
-                        _refresh()
-                        if added:
-                            messagebox.showinfo("추가 완료",
-                                f"'{g}' 그룹에 {added}명 추가됐습니다.", parent=win)
-                        else:
-                            messagebox.showinfo("이미 포함",
-                                "선택된 학생이 이미 모두 그룹에 있습니다.", parent=win)
-                    return _add_sel
-
-                tk.Button(btn_row, text="전체 선택에 추가", font=FS,
-                          bg=YELLOW, fg=DARK, relief="flat", bd=0,
-                          cursor="hand2", padx=10, pady=3,
-                          command=_make_load_all()).pack(side="left")
-                tk.Button(btn_row, text="현재 선택에서 추가", font=FS,
-                          bg=LGRAY, fg=DARK, relief="flat", bd=0,
-                          cursor="hand2", padx=8, pady=3,
-                          command=_make_add_sel()).pack(side="left", padx=(6, 0))
-
-                # ── 토글 함수 ──
-                def _make_toggle(bf=body_frame, al=arrow_lbl):
-                    expanded = [False]
-                    def _toggle(_=None):
-                        if expanded[0]:
-                            bf.pack_forget()
-                            al.config(text="▶")
-                        else:
-                            bf.pack(fill="x")
-                            al.config(text="▼")
-                        expanded[0] = not expanded[0]
-                    return _toggle
-
-                toggle_fn = _make_toggle()
-                hdr.bind("<Button-1>", toggle_fn)
-                for child in hdr.winfo_children():
-                    if not isinstance(child, tk.Button):
-                        child.bind("<Button-1>", toggle_fn)
+            if unlabeled:
+                if has_any_label:
+                    _cat_header("기타")
+                for gname, members, gm in unlabeled:
+                    _render_group(gname, members, gm)
 
         _refresh()
 
@@ -1067,11 +1495,16 @@ class App(TkinterDnD.Tk if _DND_OK else tk.Tk):
                   command=win.destroy).pack(anchor="e", pady=(10, 0))
 
         win.update_idletasks()
-        w = max(win.winfo_reqwidth(), 430)
-        h = min(max(win.winfo_reqheight(), 300), 580)
+        w = max(win.winfo_reqwidth(), 500)
+        h = min(max(win.winfo_reqheight(), 533), 860)
         x = self.winfo_x() + (self.winfo_width() - w) // 2
         y = self.winfo_y() + (self.winfo_height() - h) // 2
         win.geometry(f"{w}x{h}+{x}+{y}")
+
+    # ── 강제 종료 ──────────────────────────────────────────────────
+    def _on_abort(self):
+        if messagebox.askyesno("강제 종료", "프로그램을 즉시 종료합니다.\n진행 중인 전송도 모두 중단됩니다.\n계속하시겠습니까?"):
+            os._exit(0)
 
     # ── 로그인 ────────────────────────────────────────────────────
     def _show_login_btn(self):
