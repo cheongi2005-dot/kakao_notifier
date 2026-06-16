@@ -860,7 +860,7 @@ class App(TkinterDnD.Tk if _DND_OK else tk.Tk):
         fail_map  = {}   # name → reason
         total     = len(targets)
 
-        with ThreadPoolExecutor(max_workers=2) as pool:
+        with ThreadPoolExecutor(max_workers=5) as pool:
             futures = {pool.submit(send_message, t["name"], msg, file_paths): t["name"]
                        for t in targets}
             for future in as_completed(futures):
